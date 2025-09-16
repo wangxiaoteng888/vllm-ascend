@@ -189,7 +189,8 @@ class AscendMLAMetadataBuilder:
                            self.block_size - 1) // self.block_size
         self.chunked_prefill_enabled = scheduler_config.chunked_prefill_enabled
         if self.chunked_prefill_enabled:
-            if vllm_config.kv_transfer_config.is_kv_consumer:
+            if vllm_config.kv_transfer_config is not None and\
+                vllm_config.kv_transfer_config.is_kv_consumer:
                 max_chunked_size = scheduler_config.max_num_seqs * self.block_size
             else:
                 max_chunked_size = 128 * 1024
