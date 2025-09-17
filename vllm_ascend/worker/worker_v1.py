@@ -181,7 +181,8 @@ class NPUWorker(WorkerBase):
             peak_memory = torch_npu.npu.memory_stats()["allocated_bytes.all.peak"] + \
             chuked_prefill_work_space_size
         else:
-            peak_memory = torch_npu.npu.memory_stats()["allocated_bytes.all.peak"]
+            peak_memory = torch_npu.npu.memory_stats(
+            )["allocated_bytes.all.peak"]
         # TODO: don`t need impl this func after empty_cache in
         # Worker.determine_num_available_blocks() unified`
         NPUPlatform.empty_cache()
