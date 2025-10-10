@@ -229,6 +229,7 @@ class KVCacheSendingLayerThread(threading.Thread):
                     self.task_tracker.remove_delayed_request(request_id)
                     with self.lock:
                         self.ready_decode[request_id] = metadata
+                        # print(f'[===] pop pending decode {request_id=}')
                         pending = self.pending_decode.pop(request_id, [])
                     for local_block_ids, layer_index, key, value in pending:
                         self.send_layer_thread.send_queue.put(
@@ -252,12 +253,14 @@ class KVCacheSendingLayerThread(threading.Thread):
     def add_request(self, request_id: str, local_block_ids: list[int],
                     layer_index: int, key: torch.Tensor, value: torch.Tensor):
         # add request to send layer thread
-        with self.lock:
+        with self.lock:    
             if request_id in self.ready_decode:
+                # print(f'[===] add request in ready_decode {request_id=}')
                 self.send_layer_thread.send_queue.put(
                     (self.ready_decode[request_id], request_id,
                      local_block_ids, layer_index, key, value))
             else:
+                # print(f'[===] add request in pending_decode {request_id=}')
                 self.pending_decode.setdefault(request_id, []).append(
                     (local_block_ids, layer_index, key, value))
 
@@ -287,6 +290,8 @@ class SendingLayerThread(threading.Thread):
         self.engine = engine
         self.tp_rank = tp_rank
         self.pd_tp_ratio = get_ascend_config().pd_tp_ratio
+        self.num_head_replica = get_ascend_config().num_head_replica
+        self.pd_head_ratio = get_ascend_config().pd_head_ratio
         vllm_config = get_current_vllm_config()
         max_model_len = vllm_config.scheduler_config.max_model_len
         first_kv_cache = first_kv_cache[:max_model_len]
@@ -358,89 +363,95 @@ class SendingLayerThread(threading.Thread):
         remote_kv_base_addrs = req_meta.kv_caches_base_addr
 
         remote_block_ids = req_meta.block_ids
-        if self.pd_tp_ratio == 1:
-            layer_local_kv_base_addr = [
-                self.local_kv_base_addr[i]
-                for i in [2 * layer_index, 2 * layer_index + 1]
-            ]
-            layer_remote_kv_base_addr = [
-                remote_kv_base_addrs[i]
-                for i in [2 * layer_index, 2 * layer_index + 1]
-            ]
-            grouped_remote_block_ids, grouped_local_block_ids = \
-                group_concurrent_contiguous(remote_block_ids, local_block_ids)
+        if self.pd_head_ratio == 1:
+            if self.num_head_replica <= 1 or self.tp_rank % self.num_head_replica == 0:
+                layer_local_kv_base_addr = [
+                    self.local_kv_base_addr[i]
+                    for i in [2 * layer_index, 2 * layer_index + 1]
+                ]
+                layer_remote_kv_base_addr = [
+                    remote_kv_base_addrs[i]
+                    for i in [2 * layer_index, 2 * layer_index + 1]
+                ]
+                grouped_remote_block_ids, grouped_local_block_ids = \
+                    group_concurrent_contiguous(remote_block_ids, local_block_ids)
 
-            session_id = f"{remote_host}:{remote_te_port}"
-            src_list, dst_list, length_list = [], [], []
-            for k, (src_layer_base_addr, dst_layer_base_addr) in enumerate(
-                    zip(layer_local_kv_base_addr, layer_remote_kv_base_addr)):
-                block_len = self.block_len[
-                    k % 2] if self.use_mla else self.block_len[0]
-                for group_remote_block_id, group_local_block_id in zip(
-                        grouped_remote_block_ids, grouped_local_block_ids):
-                    src = src_layer_base_addr + group_local_block_id[
-                        0] * block_len
-                    dst = dst_layer_base_addr + group_remote_block_id[
-                        0] * block_len
-                    length = len(group_local_block_id) * block_len
-                    src_list.append(src)
-                    dst_list.append(dst)
-                    length_list.append(length)
-            torch.npu.synchronize()
-            ret = self.engine.batch_transfer_sync_write(
-                session_id, src_list, dst_list, length_list)
+                session_id = f"{remote_host}:{remote_te_port}"
+                src_list, dst_list, length_list = [], [], []
+                for k, (src_layer_base_addr, dst_layer_base_addr) in enumerate(
+                        zip(layer_local_kv_base_addr, layer_remote_kv_base_addr)):
+                    block_len = self.block_len[
+                        k % 2] if self.use_mla else self.block_len[0]
+                    for group_remote_block_id, group_local_block_id in zip(
+                            grouped_remote_block_ids, grouped_local_block_ids):
+                        src = src_layer_base_addr + group_local_block_id[
+                            0] * block_len
+                        dst = dst_layer_base_addr + group_remote_block_id[
+                            0] * block_len
+                        length = len(group_local_block_id) * block_len
+                        src_list.append(src)
+                        dst_list.append(dst)
+                        length_list.append(length)
+                torch.npu.synchronize()
+                ret = self.engine.batch_transfer_sync_write(
+                    session_id, src_list, dst_list, length_list)
 
-            if ret < 0:
-                logger.error("Mooncake transfer failed for request %s",
-                             req_meta.req_id)
-                raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
+                if ret < 0:
+                    logger.error("Mooncake transfer failed for request %s",
+                                req_meta.req_id)
+                    raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
         else:
-            key = key.view(-1, key.shape[-1])
-            value = value.view(-1, key.shape[-1])
-            self.k_buffer[:key.shape[0]].copy_(key)  # [:4, 128] ->
-            self.v_buffer[:value.shape[0]].copy_(value)
+            if self.num_head_replica <= 1 or self.tp_rank % self.num_head_replica == 0:
+                key = key.view(-1, key.shape[-1])
+                value = value.view(-1, key.shape[-1])
+                self.k_buffer[:key.shape[0]].copy_(key)  # [:4, 128] ->
+                self.v_buffer[:value.shape[0]].copy_(value)
 
-            layer_local_kv_base_addr = [
-                self.k_buffer.data_ptr(),
-                self.v_buffer.data_ptr()
-            ]
+                layer_local_kv_base_addr = [
+                    self.k_buffer.data_ptr(),
+                    self.v_buffer.data_ptr()
+                ]
 
-            layer_remote_kv_base_addr = [
-                remote_kv_base_addrs[i]
-                for i in [2 * layer_index, 2 * layer_index + 1]
-            ]
+                layer_remote_kv_base_addr = [
+                    remote_kv_base_addrs[i]
+                    for i in [2 * layer_index, 2 * layer_index + 1]
+                ]
 
-            grouped_remote_block_ids, _ = group_concurrent_contiguous(
-                remote_block_ids)
+                grouped_remote_block_ids, _ = group_concurrent_contiguous(
+                    remote_block_ids)
 
-            session_id = f"{remote_host}:{remote_te_port}"
-            src_list, dst_list, length_list = [], [], []
-            for k, (src_layer_base_addr, dst_layer_base_addr) in enumerate(
-                    zip(layer_local_kv_base_addr, layer_remote_kv_base_addr)):
-                src_layer_addr = src_layer_base_addr
-                for group_remote_block_id in grouped_remote_block_ids:
-                    block_len = self.block_len[0]
-                    remote_block_len = self.block_len[0] * self.pd_tp_ratio
-                    src_list.append(src_layer_addr)
+                session_id = f"{remote_host}:{remote_te_port}"
+                src_list, dst_list, length_list = [], [], []
+                for k, (src_layer_base_addr, dst_layer_base_addr) in enumerate(
+                        zip(layer_local_kv_base_addr, layer_remote_kv_base_addr)):
+                    src_layer_addr = src_layer_base_addr
+                    for group_remote_block_id in grouped_remote_block_ids:
+                        block_len = self.block_len[0]
+                        remote_block_len = self.block_len[0] * self.pd_head_ratio
+                        src_list.append(src_layer_addr)
 
-                    if src_layer_addr + len(
-                            group_remote_block_id
-                    ) * block_len > src_layer_base_addr + key.numel(
-                    ) * key.element_size():
-                        length = src_layer_base_addr + key.numel(
-                        ) * key.element_size() - src_layer_addr
-                    else:
-                        length = len(group_remote_block_id) * block_len
-                    length_list.append(length)
+                        if src_layer_addr + len(
+                                group_remote_block_id
+                        ) * block_len > src_layer_base_addr + key.numel(
+                        ) * key.element_size():
+                            length = src_layer_base_addr + key.numel(
+                            ) * key.element_size() - src_layer_addr
+                        else:
+                            length = len(group_remote_block_id) * block_len
+                        length_list.append(length)
 
-                    dst_list.append(dst_layer_base_addr +
-                                    group_remote_block_id[0] *
-                                    remote_block_len + length *
-                                    (self.tp_rank % self.pd_tp_ratio))
-                    src_layer_addr += length
-            torch.npu.synchronize()
-            ret = self.engine.batch_transfer_sync_write(
-                session_id, src_list, dst_list, length_list)
+                        dst_list.append(dst_layer_base_addr +
+                                        group_remote_block_id[0] *
+                                        remote_block_len + length *
+                                        ((self.tp_rank // self.num_head_replica) % self.pd_head_ratio))
+                        src_layer_addr += length
+                torch.npu.synchronize()
+                ret = self.engine.batch_transfer_sync_write(
+                    session_id, src_list, dst_list, length_list)
+                if ret < 0:
+                    logger.error("Mooncake transfer failed for request %s",
+                                req_meta.req_id)
+                    raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
             self.completion_event_count -= 1
 
             if self.completion_event_count == 0 and self.completion_event is not None:
@@ -449,14 +460,10 @@ class SendingLayerThread(threading.Thread):
                 )
                 self.completion_event.set()
 
-            if ret < 0:
-                logger.error("Mooncake transfer failed for request %s",
-                             req_meta.req_id)
-                raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
-
     def add_event(self, event: threading.Event, count: int) -> None:
         self.completion_event = event
         self.completion_event_count = count
+        # print(f'[===] add event {count=}')
 
 
 class KVCacheRecvingLayerThread(threading.Thread):
@@ -924,6 +931,8 @@ class MooncakeLayerwiseConnectorWorker:
         self.kv_caches_base_addr: list[int] = []
 
         self.pd_tp_ratio = get_ascend_config().pd_tp_ratio
+        self.pd_head_ratio = get_ascend_config().pd_head_ratio
+
         self.first_kv_cache = None
 
     def _get_prefill_decode_size(self, vllm_config: VllmConfig):
@@ -1104,7 +1113,7 @@ class MooncakeLayerwiseConnectorWorker:
                     path = make_zmq_path(
                         "tcp", meta.remote_host, meta.remote_port +
                         self.tp_rank * self.pd_tp_ratio + offset)
-                    logger.debug(
+                    logger.info(
                         f"Notify the prefiller: {path} that request: {req_id} from decoder is ready."
                     )
                     msg_encoder = msgspec.msgpack.Encoder()
@@ -1142,7 +1151,7 @@ class MooncakeLayerwiseConnectorWorker:
                       **kwargs) -> None:
         """MooncakeLayerwiseConnector does not save explicitly."""
         if self.kv_role == 'kv_producer':
-            if self.pd_tp_ratio != 1:
+            if self.pd_head_ratio != 1:
                 if self.current_layer != 0:
                     self.completion_event.wait()
                 self.completion_event = threading.Event()
@@ -1153,8 +1162,8 @@ class MooncakeLayerwiseConnectorWorker:
 
                 def sort_kv_cache(input_kv: list[list[int]]):
                     return torch.cat([
-                        torch.chunk(tensor, self.pd_tp_ratio, dim=0)[x]
-                        for x in range(self.pd_tp_ratio) for tensor in input_kv
+                        torch.chunk(tensor, self.pd_head_ratio, dim=0)[x]
+                        for x in range(self.pd_head_ratio) for tensor in input_kv
                     ])
 
                 total_block_ids = [
@@ -1176,7 +1185,7 @@ class MooncakeLayerwiseConnectorWorker:
                 keys = sort_kv_cache(keys)  # [req1_key, req2_key]
                 values = sort_kv_cache(values)
                 (keys,
-                 values) = kv_alltoall_and_rearrange(self.pd_tp_ratio, keys,
+                 values) = kv_alltoall_and_rearrange(self.pd_head_ratio, keys,
                                                      values)
                 key_start_id = 0
                 value_start_id = 0
@@ -1185,7 +1194,7 @@ class MooncakeLayerwiseConnectorWorker:
                 value = None
             for req_id, request in connector_metadata.requests.items():
                 logger.info(f"Add request {req_id} to kv send layer thread. ")
-                if self.pd_tp_ratio != 1:
+                if self.pd_head_ratio != 1:
                     key_block_num = len(
                         request.local_block_ids) * key_block_size
                     value_block_num = len(
