@@ -229,7 +229,6 @@ class KVCacheSendingLayerThread(threading.Thread):
                     self.task_tracker.remove_delayed_request(request_id)
                     with self.lock:
                         self.ready_decode[request_id] = metadata
-                        # print(f'[===] pop pending decode {request_id=}')
                         pending = self.pending_decode.pop(request_id, [])
                     for local_block_ids, layer_index, key, value in pending:
                         self.send_layer_thread.send_queue.put(
@@ -253,14 +252,12 @@ class KVCacheSendingLayerThread(threading.Thread):
     def add_request(self, request_id: str, local_block_ids: list[int],
                     layer_index: int, key: torch.Tensor, value: torch.Tensor):
         # add request to send layer thread
-        with self.lock:    
+        with self.lock:
             if request_id in self.ready_decode:
-                # print(f'[===] add request in ready_decode {request_id=}')
                 self.send_layer_thread.send_queue.put(
                     (self.ready_decode[request_id], request_id,
                      local_block_ids, layer_index, key, value))
             else:
-                # print(f'[===] add request in pending_decode {request_id=}')
                 self.pending_decode.setdefault(request_id, []).append(
                     (local_block_ids, layer_index, key, value))
 
@@ -280,7 +277,7 @@ class SendingLayerThread(threading.Thread):
         self.send_queue = queue.Queue[tuple[DecodeMooncakeAgentMetadata, str,
                                             list[int], int, torch.Tensor,
                                             torch.Tensor]]()
-        self.completion_event: threading.Event = None
+        self.completion_event: Optional[threading.Event] = None
         self.completion_event_count: int
         self.task_tracker = task_tracker
         self.total_layers = total_layers
@@ -399,7 +396,7 @@ class SendingLayerThread(threading.Thread):
 
             if ret < 0:
                 logger.error("Mooncake transfer failed for request %s",
-                            req_meta.req_id)
+                             req_meta.req_id)
                 raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
         else:
             key = key.view(-1, key.shape[-1])
@@ -443,14 +440,15 @@ class SendingLayerThread(threading.Thread):
                     dst_list.append(dst_layer_base_addr +
                                     group_remote_block_id[0] *
                                     remote_block_len + length *
-                                    ((self.tp_rank // self.num_head_replica) % self.pd_head_ratio))
+                                    ((self.tp_rank // self.num_head_replica) %
+                                     self.pd_head_ratio))
                     src_layer_addr += length
             torch.npu.synchronize()
             ret = self.engine.batch_transfer_sync_write(
                 session_id, src_list, dst_list, length_list)
             if ret < 0:
                 logger.error("Mooncake transfer failed for request %s",
-                            req_meta.req_id)
+                             req_meta.req_id)
                 raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
         if self.completion_event is not None:
             self.completion_event_count -= 1
@@ -461,7 +459,6 @@ class SendingLayerThread(threading.Thread):
     def add_event(self, event: threading.Event, count: int) -> None:
         self.completion_event = event
         self.completion_event_count = count
-        # print(f'[===] add event {count=}')
 
 
 class KVCacheRecvingLayerThread(threading.Thread):
@@ -1161,7 +1158,8 @@ class MooncakeLayerwiseConnectorWorker:
                 def sort_kv_cache(input_kv: list[list[int]]):
                     return torch.cat([
                         torch.chunk(tensor, self.pd_head_ratio, dim=0)[x]
-                        for x in range(self.pd_head_ratio) for tensor in input_kv
+                        for x in range(self.pd_head_ratio)
+                        for tensor in input_kv
                     ])
 
                 total_block_ids = [

@@ -1,4 +1,4 @@
-# Prefill-Decode Disaggregation Verification (Qwen)
+# Prefill-Decode Disaggregation Mooncake Verification (Qwen)
 
 ## Getting Start
 
@@ -55,17 +55,17 @@ Mooncake is the serving platform for Kimi, a leading LLM service provided by Moo
 git clone -b pooling_async_memecpy_v1 https://github.com/AscendTransport/Mooncake
 ```
 
+Update and install Python
+
+```shell
+apt-get install python3
+```
+
 Install the relevant dependencies.
 
 ```shell
 cd Mooncake
 bash dependencies.sh
-```
-
-Update and install Python
-
-```shell
-apt-get install python3
 ```
 
 Install mpi
@@ -114,6 +114,10 @@ export VLLM_USE_V1=1
 export HCCL_BUFFSIZE=1024
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
+export ASCEND_AGGREGATE_ENABLE=1
+export ASCEND_TRANSPORT_PRINT=0
+export ACL_OP_INIT_MODE=1
+export ASCEND_A3_ENABLE=1
 vllm serve /model/Qwen3-235B-A22B-W8A8 \
   --host 0.0.0.0 \
   --port 8004 \
@@ -169,7 +173,11 @@ export VLLM_USE_V1=1
 export HCCL_BUFFSIZE=1024
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
-vllm serve /mnt/weight/Qwen3-235B-A22B-W8A8 \
+export ASCEND_AGGREGATE_ENABLE=1
+export ASCEND_TRANSPORT_PRINT=0
+export ACL_OP_INIT_MODE=1
+export ASCEND_A3_ENABLE=1
+vllm serve /model/Qwen3-235B-A22B-W8A8 \
   --host 0.0.0.0 \
   --port 8004 \
   --api-server-count 2 \
@@ -223,7 +231,10 @@ export VLLM_USE_V1=1
 export HCCL_BUFFSIZE=2048
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
-
+export ASCEND_AGGREGATE_ENABLE=1
+export ASCEND_TRANSPORT_PRINT=0
+export ACL_OP_INIT_MODE=1
+export ASCEND_A3_ENABLE=1
 vllm serve /model/Qwen3-235B-A22B-W8A8 \
   --host 0.0.0.0 \
   --port 8004 \
@@ -279,7 +290,10 @@ export VLLM_USE_V1=1
 export HCCL_BUFFSIZE=2048
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
-
+export ASCEND_AGGREGATE_ENABLE=1
+export ASCEND_TRANSPORT_PRINT=0
+export ACL_OP_INIT_MODE=1
+export ASCEND_A3_ENABLE=1
 vllm serve /model/Qwen3-235B-A22B-W8A8 \
   --host 0.0.0.0 \
   --port 8004 \
@@ -307,6 +321,234 @@ vllm serve /model/Qwen3-235B-A22B-W8A8 \
   "kv_port": "30300",
   "engine_id": "3",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
+  "kv_connector_extra_config": {
+            "prefill": {
+                    "dp_size": 2,
+                    "tp_size": 8
+             },
+             "decode": {
+                    "dp_size": 32,
+                    "tp_size": 1
+             }
+      }
+  }'
+```
+
+::::
+
+:::::
+
+### mooncake
+
+:::::{tab-set}
+
+::::{tab-item} Prefiller node 1
+
+```shell
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+export HCCL_IF_IP=192.0.0.1
+export GLOO_SOCKET_IFNAME="eth0"  # network card name
+export TP_SOCKET_IFNAME="eth0"
+export HCCL_SOCKET_IFNAME="eth0"
+export VLLM_USE_V1=1
+export HCCL_BUFFSIZE=1024
+export OMP_PROC_BIND=false
+export OMP_NUM_THREADS=10
+vllm serve /model/Qwen3-235B-A22B-W8A8 \
+  --host 0.0.0.0 \
+  --port 8004 \
+  --api-server-count 2 \
+  --data-parallel-size 2 \
+  --data-parallel-size-local 2 \
+  --data-parallel-address 192.0.0.1 \
+  --data-parallel-rpc-port 13389 \
+  --tensor-parallel-size 8 \
+  --enable-expert-parallel \
+  --seed 1024 \
+  --enforce-eager \
+  --distributed-executor-backend mp \
+  --served-model-name qwen3-moe \
+  --max-model-len 32768 \
+  --max-num-batched-tokens 4096 \
+  --trust-remote-code \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.9 \
+  --kv-transfer-config \
+  '{"kv_connector": "MooncakeConnector",
+  "kv_role": "kv_producer",
+  "kv_port": "30000",
+  "engine_id": "0",
+  "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
+  "kv_connector_extra_config": {
+            "use_ascend_direct": true,
+            "prefill": {
+                    "dp_size": 2,
+                    "tp_size": 8
+             },
+             "decode": {
+                    "dp_size": 32,
+                    "tp_size": 1
+             }
+      }
+  }'
+```
+
+::::
+
+::::{tab-item} Prefiller node 2
+
+```shell
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+export HCCL_IF_IP=192.0.0.2
+export GLOO_SOCKET_IFNAME="eth0"  # network card name
+export TP_SOCKET_IFNAME="eth0"
+export HCCL_SOCKET_IFNAME="eth0"
+export VLLM_USE_V1=1
+export HCCL_BUFFSIZE=1024
+export OMP_PROC_BIND=false
+export OMP_NUM_THREADS=10
+vllm serve /mnt/weight/Qwen3-235B-A22B-W8A8 \
+  --host 0.0.0.0 \
+  --port 8004 \
+  --api-server-count 2 \
+  --data-parallel-size 2 \
+  --data-parallel-size-local 2 \
+  --data-parallel-address 192.0.0.2 \
+  --data-parallel-rpc-port 13389 \
+  --tensor-parallel-size 8 \
+  --enable-expert-parallel \
+  --seed 1024 \
+  --enforce-eager \
+  --distributed-executor-backend mp \
+  --served-model-name qwen3-moe \
+  --max-model-len 32768 \
+  --max-num-batched-tokens 4096 \
+  --trust-remote-code \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.9 \
+  --kv-transfer-config \
+  '{"kv_connector": "MooncakeConnector",
+  "kv_role": "kv_producer",
+  "kv_port": "30100",
+  "engine_id": "1",
+  "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
+  "kv_connector_extra_config": {
+            "prefill": {
+                    "dp_size": 2,
+                    "tp_size": 8
+             },
+             "decode": {
+                    "dp_size": 32,
+                    "tp_size": 1
+             }
+      }
+  }'
+```
+
+::::
+
+::::{tab-item} Decoder node 1
+
+```shell
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+export HCCL_IF_IP=192.0.0.3
+export GLOO_SOCKET_IFNAME="eth0"  # network card name
+export TP_SOCKET_IFNAME="eth0"
+export HCCL_SOCKET_IFNAME="eth0"
+export VLLM_USE_V1=1
+export HCCL_BUFFSIZE=2048
+export OMP_PROC_BIND=false
+export OMP_NUM_THREADS=10
+
+vllm serve /model/Qwen3-235B-A22B-W8A8 \
+  --host 0.0.0.0 \
+  --port 8004 \
+  --api-server-count 4 \
+  --data-parallel-size 32 \
+  --data-parallel-size-local 16 \
+  --data-parallel-address 192.0.0.3 \
+  --data-parallel-rpc-port 5964  \
+  --tensor-parallel-size 1 \
+  --enable-expert-parallel \
+  --seed 1024 \
+  --distributed-executor-backend mp \
+  --served-model-name qwen3-moe \
+  --max-model-len 32768 \
+  --max-num-batched-tokens 512 \
+  --max-num_seqs 16 \
+  --trust-remote-code \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.9 \
+  --compilation-config '{"cudagraph_capture_sizes":[16]}' \
+  --kv-transfer-config \
+  '{"kv_connector": "MooncakeConnector",
+  "kv_role": "kv_consumer",
+  "kv_port": "30200",
+  "engine_id": "2",
+  "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
+  "kv_connector_extra_config": {
+            "prefill": {
+                    "dp_size": 2,
+                    "tp_size": 8
+             },
+             "decode": {
+                    "dp_size": 32,
+                    "tp_size": 1
+             }
+      }
+  }'
+```
+
+::::
+
+::::{tab-item} Decoder node 2
+
+```shell
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+export HCCL_IF_IP=192.0.0.4
+export GLOO_SOCKET_IFNAME="eth0"  # network card name
+export TP_SOCKET_IFNAME="eth0"
+export HCCL_SOCKET_IFNAME="eth0"
+export VLLM_USE_V1=1
+export HCCL_BUFFSIZE=2048
+export OMP_PROC_BIND=false
+export OMP_NUM_THREADS=10
+
+vllm serve /model/Qwen3-235B-A22B-W8A8 \
+  --host 0.0.0.0 \
+  --port 8004 \
+  --headless \
+  --data-parallel-size 32 \
+  --data-parallel-size-local 16 \
+  --data-parallel-start-rank 16 \
+  --data-parallel-address 192.0.0.3 \
+  --data-parallel-rpc-port 5964  \
+  --tensor-parallel-size 1 \
+  --enable-expert-parallel \
+  --seed 1024 \
+  --distributed-executor-backend mp \
+  --served-model-name qwen3-moe \
+  --max-model-len 32768 \
+  --max-num-batched-tokens 512 \
+  --max-num_seqs 16 \
+  --trust-remote-code \
+  --no-enable-prefix-caching \
+  --gpu-memory-utilization 0.9 \
+  --compilation-config '{"cudagraph_capture_sizes":[16]}' \
+  --kv-transfer-config \
+  '{"kv_connector": "MooncakeConnector",
+  "kv_role": "kv_consumer",
+  "kv_port": "30300",
+  "engine_id": "3",
+  "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
   "kv_connector_extra_config": {
             "prefill": {
                     "dp_size": 2,

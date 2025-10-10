@@ -118,9 +118,10 @@ class AscendConfig:
                     prefill_tp_size = min(prefill_tp_size, num_kv_head)
                     decode_tp_size = min(decode_tp_size, num_kv_head)
                     self.pd_head_ratio = prefill_tp_size // decode_tp_size
-                except Exception as e:
-                    raise AssertionError(f"Can not get num_key_value_heads from model_config")
-            
+                except Exception:
+                    raise AssertionError(
+                        "Can not get num_key_value_heads from model_config")
+
             if self.pd_tp_ratio == 0:
                 raise AssertionError(
                     "Only support P node tp size lagger then D node tp size")
