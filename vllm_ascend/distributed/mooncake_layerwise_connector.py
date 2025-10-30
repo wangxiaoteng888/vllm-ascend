@@ -25,13 +25,19 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
 from vllm.distributed.parallel_state import (get_tensor_model_parallel_rank,
                                              get_tp_group, get_world_group)
-from vllm.utils import get_ip, logger, make_zmq_path, make_zmq_socket
+from vllm.utils import logger
 from vllm.v1.core.sched.output import SchedulerOutput
 
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.distributed.utils import (align_memory,
                                            kv_alltoall_and_rearrange)
+from vllm_ascend.utils import vllm_version_is
+
+if vllm_version_is("0.11.0"):
+    from vllm.utils import get_ip, make_zmq_path, make_zmq_socket
+else:
+    from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -53,7 +59,7 @@ class ReqMeta:
     local_block_ids: list[int]
     token_ids: list[int]
     # Not None if layer-wise is disabled
-    remote_block_ids: Optional[list[int]]
+    remote_block_ids: list[int]
     remote_engine_id: Optional[str]
     remote_host: Optional[str]
     remote_port: Optional[int]
@@ -75,7 +81,7 @@ class KVCacheSendingLayerThread(threading.Thread):
                  use_mla: bool,
                  block_len: list[int],
                  first_kv_cache: torch.Tensor,
-                 callback_func: Callable[[str], None] = lambda x: None):
+                 callback_func: Callable[..., None] = lambda x: None):
         super().__init__(daemon=True, name="KVCacheSendingLayerThread")
         self.engine = engine
         self.tp_rank = tp_rank
@@ -92,11 +98,9 @@ class KVCacheSendingLayerThread(threading.Thread):
             self.k_buffer = torch.zeros(first_kv_cache.numel() + alignment,
                                         dtype=first_kv_cache.dtype,
                                         device=first_kv_cache.device)
-            print(f"before {self.k_buffer=}")
             self.k_buffer = align_memory(
                 self.k_buffer, alignment)[:first_kv_cache.numel()].view(
                     -1, first_kv_cache.shape[-1])
-            print(f"after {self.k_buffer=}")
             self.v_buffer = torch.zeros(first_kv_cache.numel() + alignment,
                                         dtype=first_kv_cache.dtype,
                                         device=first_kv_cache.device)
@@ -109,7 +113,6 @@ class KVCacheSendingLayerThread(threading.Thread):
                 ) % alignment == 0, "The address of the registered kv cache should be aligned to 2M"
                 ret_value = self.engine.register_memory(
                     tensor.data_ptr(), tensor.numel())
-                print(f"{tensor.data_ptr()=} {tensor.numel()=}")
                 logger.info(
                     f"Register memory for prefill when pd head ratio > 1 {tensor.data_ptr()} {tensor.numel()} {ret_value=}"
                 )
@@ -129,7 +132,6 @@ class KVCacheSendingLayerThread(threading.Thread):
         self.ready_event.set()
         while True:
             req_id, req_meta, layer_index, key, value = self.send_queue.get()
-            print(f"{req_id=} {req_meta=} {layer_index=} {key=} {value=}")
             self._handle_request(req_id, req_meta, layer_index, key, value)
 
     def _handle_request(self, req_id, req_meta, layer_index, key, value):
@@ -152,8 +154,6 @@ class KVCacheSendingLayerThread(threading.Thread):
         # not need to send kv cache
         if self.tp_rank % self.num_head_replica != 0:
             return
-        # tp = 8, head = 4,  num_head_replica = 2
-        # tp 0 传输, tp 1 不传
 
         remote_host = req_meta.remote_host
         remote_block_ids = req_meta.remote_block_ids
@@ -161,10 +161,8 @@ class KVCacheSendingLayerThread(threading.Thread):
         remote_kv_base_addrs = req_meta.remote_kv_caches_base_addr
         local_kv_base_addr = self.kv_caches_base_addr
         local_block_ids = req_meta.local_block_ids
-        if self.pd_head_ratio == 1:
-            #第0层就是 layer_local_kv_base_addr = [local_kv_base_addr[0],local_kv_base_addr[1]]
-            # layer_remote_kv_base_addr = [remote_kv_base_addrs[0],remote_kv_base_addrs[1]]
 
+        if self.pd_head_ratio == 1:
             layer_local_kv_base_addr = [
                 local_kv_base_addr[i]
                 for i in [2 * layer_index, 2 * layer_index + 1]
@@ -173,7 +171,6 @@ class KVCacheSendingLayerThread(threading.Thread):
                 remote_kv_base_addrs[i]
                 for i in [2 * layer_index, 2 * layer_index + 1]
             ]
-            print(f"{remote_block_ids=} {local_block_ids=}")
             grouped_remote_block_ids, grouped_local_block_ids = \
                 group_concurrent_contiguous(remote_block_ids, local_block_ids)
 
@@ -342,11 +339,11 @@ class MooncakeLayerwiseConnectorMetadata(KVConnectorMetadata):
                     request_id: str,
                     local_block_ids: list[int],
                     kv_transfer_params: dict[str, Any],
-                    token_ids: list[int] = None):
+                    token_ids: Optional[list[int]] = None):
         self.requests[request_id] = ReqMeta(
-            token_ids=token_ids,
+            token_ids=token_ids or [],
             local_block_ids=local_block_ids,
-            remote_block_ids=kv_transfer_params.get("remote_block_ids", None),
+            remote_block_ids=kv_transfer_params.get("remote_block_ids", []),
             remote_engine_id=kv_transfer_params.get("remote_engine_id", None),
             remote_host=kv_transfer_params.get("remote_host", None),
             remote_port=kv_transfer_params.get("remote_port", None),
@@ -363,6 +360,7 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1):
     def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole):
         assert vllm_config.kv_transfer_config is not None
         self.engine_id = vllm_config.kv_transfer_config.engine_id
+        self._connector_metadata = MooncakeLayerwiseConnectorMetadata()
 
         if role == KVConnectorRole.SCHEDULER:
             self.connector_scheduler: Optional[MooncakeLayerwiseConnectorScheduler] = \
@@ -471,12 +469,11 @@ class MooncakeLayerwiseConnectorScheduler:
         # Requests that need to start recv.
         # New requests are added by update_state_after_alloc in
         # the scheduler. Used to make metadata passed to Worker.
-        self._reqs_need_recv: dict[str, list[int], tuple[Request,
-                                                         list[int]]] = {}
-        # self._reqs_need_send: dict[str, float] = {}
-        self._reqs_need_send_layerwise: dict[
-            str, tuple[int, list[int],
-                       Request]] = {}  # req_id, (len(prompt), local_block_ids)
+        self._reqs_need_recv: dict[str, tuple[Request, list[int],
+                                              list[int]]] = {}
+        self._reqs_need_send_layerwise: dict[str, tuple[
+            int, list[int],
+            Request]] = {}  # req_id, (len(prompt), local_block_ids, request)
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -526,7 +523,6 @@ class MooncakeLayerwiseConnectorScheduler:
             local_block_ids = (blocks.get_unhashed_block_ids()
                                if num_external_tokens > 0 else [])
             # Get unhashed blocks to pull from remote.
-            # logger.info(f"[===] update_state_after_alloc , _reqs_need_recv add [{request.request_id=}, {local_block_ids=}]")
             self._reqs_need_recv[request.request_id] = (
                 request,
                 [],  #request._all_token_ids,
@@ -537,7 +533,6 @@ class MooncakeLayerwiseConnectorScheduler:
         # Layerwise prefiller add request need send
         if params is not None and params.get("do_remote_decode"):
             local_block_ids = (blocks.get_block_ids()[0])
-            # logger.info(f"[===] update_state_after_alloc , _reqs_need_send_layerwise add [{request.request_id=}, {len(request.all_token_ids)=}, {local_block_ids=}, {request.kv_transfer_params=}]")
             self._reqs_need_send_layerwise[request.request_id] = (len(
                 request.all_token_ids), local_block_ids, request)
 
@@ -548,7 +543,6 @@ class MooncakeLayerwiseConnectorScheduler:
         meta = MooncakeLayerwiseConnectorMetadata()
 
         # Loop through scheduled reqs and convert to ReqMeta.
-        # print(f'[===] {scheduler_output.scheduled_new_reqs=}')
         for req_id, (req, token_ids,
                      block_ids) in self._reqs_need_recv.items():
             assert req.kv_transfer_params is not None
@@ -565,7 +559,6 @@ class MooncakeLayerwiseConnectorScheduler:
 
         cached_reqs = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs
-        # print(f'[===] {len(new_reqs)}')
         for req_id, new_blocks in zip(cached_reqs.req_ids,
                                       cached_reqs.new_block_ids):
             if req_id in self._reqs_need_send_layerwise and new_blocks is not None:
@@ -584,15 +577,11 @@ class MooncakeLayerwiseConnectorScheduler:
                 current_tokens = computed_tokens.get(req_id,
                                                      0) + scheduled_tokens
                 if current_tokens == total_tokens:
-                    # print(f'{current_tokens=} {total_tokens=}')
-                    meta.add_new_req(
-                        request_id=req_id,
-                        local_block_ids=block_ids,
-                        kv_transfer_params=req.kv_transfer_params,
-                    )
+                    meta.add_new_req(request_id=req_id,
+                                     local_block_ids=block_ids,
+                                     kv_transfer_params=req.kv_transfer_params,
+                                     token_ids=[])
                     self._reqs_need_send_layerwise.pop(req_id)
-        # if len(meta.requests) > 0:
-        #     logger.info(f"[===] build_connector_meta {meta.requests=}")
         return meta
 
     def request_finished(
@@ -625,6 +614,7 @@ class MooncakeLayerwiseConnectorWorker:
 
         # Metadata.
         self.vllm_config = vllm_config
+        self.local_engine_id: str = " "
         self.engine_id = engine_id
         self.tp_rank = get_tensor_model_parallel_rank()
         self.tp_size = vllm_config.parallel_config.tensor_parallel_size
@@ -637,7 +627,7 @@ class MooncakeLayerwiseConnectorWorker:
         self.total_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config)
 
-        self.executor = ThreadPoolExecutor(1)
+        self.executor = ThreadPoolExecutor(32)
         self.metaserver_client = httpx.Client(
             limits=httpx.Limits(max_connections=100000),
             timeout=None) if self.tp_rank == 0 else None
@@ -836,7 +826,19 @@ class MooncakeLayerwiseConnectorWorker:
             raise RuntimeError("Mooncake memory registration failed.")
 
     def _access_metaserver(self, url, message):
-        self.metaserver_client.post(url, json=message)
+        success = False
+        retry = 0
+        while retry < 3 and success is False:
+            retry += 1
+            try:
+                self.metaserver_client.post(url, json=message)
+                success = True
+            except Exception as e:
+                logger.error(
+                    f"Failed to connect to metaserver: {url}, retry {retry} time."
+                )
+                if retry == 3:
+                    raise e
 
     def get_finished(self) -> tuple[set[str], set[str]]:
         done_recving = (
@@ -853,7 +855,6 @@ class MooncakeLayerwiseConnectorWorker:
         """Start loading KV blocks from remote engine."""
         self.current_layer = 0
         if self.vllm_config.kv_transfer_config.is_kv_consumer:
-            # step2 通知metaserver，D节点已经为当前请求申请好了kv cache;
             for req_id, meta in metadata.requests.items():
                 if self.tp_rank % self.tp_size == 0:
                     logger.info(
@@ -870,8 +871,6 @@ class MooncakeLayerwiseConnectorWorker:
                         remote_engine_id=self.engine_id,
                         remote_host=self.side_channel_host,
                         remote_port=self.side_channel_port,
-                        # remote_te_rpc_port=self.te_rpc_port,
-                        # remote_kv_caches_base_addr=self.kv_caches_base_addr
                     )
                     future = self.executor.submit(
                         self._access_metaserver,
@@ -886,6 +885,7 @@ class MooncakeLayerwiseConnectorWorker:
                             )
 
                     future.add_done_callback(handle_exception)
+                assert self.kv_recv_layer_thread is not None
                 with self.kv_recv_layer_thread.lock:
                     self.kv_recv_layer_thread.task_tracker[req_id] = 0
 
@@ -897,6 +897,13 @@ class MooncakeLayerwiseConnectorWorker:
         """MooncakeLayerwiseConnector does not save explicitly."""
         if self.vllm_config.kv_transfer_config.is_kv_producer and connector_metadata.requests.keys(
         ):
+            # enable decode prefix cache
+            for request in connector_metadata.requests.values():
+                assert len(request.local_block_ids) >= len(
+                    request.remote_block_ids
+                ), "When prefix cache enabled, remote KVCacheBlocks num should not larger than local KVCacheBlocks num."
+                request.local_block_ids = request.local_block_ids[
+                    -len(request.remote_block_ids):]
             if self.pd_head_ratio != 1:
 
                 def sort_kv_cache(input_kv: list[list[int]]):
@@ -905,14 +912,6 @@ class MooncakeLayerwiseConnectorWorker:
                         for x in range(self.pd_head_ratio)
                         for tensor in input_kv
                     ])
-
-                # enable decode prefix cache
-                for request in connector_metadata.requests.values():
-                    assert len(request.local_block_ids) >= len(
-                        request.remote_block_ids
-                    ), "When prefix cache enabled, remote KVCacheBlocks num should not larger than local KVCacheBlocks num."
-                    request.local_block_ids = request.local_block_ids[
-                        -len(request.remote_block_ids):]
 
                 total_block_ids = [
                     request.local_block_ids
@@ -949,14 +948,13 @@ class MooncakeLayerwiseConnectorWorker:
                         req_meta.local_block_ids) * key_block_size
                     value_block_num = len(
                         req_meta.local_block_ids) * value_block_size
-                    key = keys[key_start_id:key_start_id +
-                               key_block_num]  #.clone().contiguous()
+                    key = keys[key_start_id:key_start_id + key_block_num]
                     value = values[value_start_id:value_start_id +
-                                   value_block_num]  #.clone().contiguous()
+                                   value_block_num]
                     key_start_id += key_block_num
                     value_start_id += value_block_num
-                # req_meta_update = copy.deepcopy(req_meta)
                 req_meta_update = self.update_decoder_info(req_id, req_meta)
+                assert self.kv_send_layer_thread is not None
                 self.kv_send_layer_thread.send_queue.put(
                     (req_id, req_meta_update, self.current_layer, key, value))
             self.current_layer += 1
@@ -983,7 +981,6 @@ class MooncakeLayerwiseConnectorWorker:
             return sock
 
     def update_decoder_info(self, req_id, req_meta):
-        import copy
         req_meta_update = copy.deepcopy(req_meta)
         if self.pd_tp_ratio > 1:
             req_meta_update.remote_port = req_meta_update.remote_port + self.tp_rank // self.pd_tp_ratio
@@ -992,21 +989,15 @@ class MooncakeLayerwiseConnectorWorker:
         if req_meta_update.remote_engine_id not in self.remote_kv_caches_base_addr or \
             req_meta_update.remote_port not in self.remote_kv_caches_base_addr[req_meta_update.remote_engine_id]:
             try:
-                # path = make_zmq_path("tcp", req_meta_update.remote_host, req_meta_update.remote_port)
-                # msg_encoder = msgspec.msgpack.Encoder()
                 encoded_data = self.encoder.encode((GET_META_MSG, req_id))
-                # with zmq_ctx(zmq.REQ, path) as sock:  # type: ignore
                 sock = self._get_remote_socket(req_meta_update.remote_host,
                                                req_meta_update.remote_port)
                 ensure_zmq_send(sock, encoded_data)
                 metadata_bytes = ensure_zmq_recv(sock, self.remote_poller)
                 agent_meta = self.decoder.decode(metadata_bytes)
-                # ack = sock.recv()
-                # if ack != b"ACK":
-                #     raise ValueError(f"Unexpected ACK response: {ack}")
             except Exception as e:
                 logger.error(
-                    f"Query te port and kv base addr for request {req_id} from {req_meta_update.remote_host}:{req_meta_update.remote_port} fail with error: {e}"
+                    f"Query to port and kv base addr for request {req_id} from {req_meta_update.remote_host}:{req_meta_update.remote_port} fail with error: {e}"
                 )
             assert req_meta_update.remote_engine_id != self.engine_id, (
                 f"Conflict engine id {req_meta_update.remote_engine_id} with local engine id "
@@ -1016,7 +1007,7 @@ class MooncakeLayerwiseConnectorWorker:
             self.remote_te_port[req_meta_update.remote_engine_id][
                 req_meta_update.remote_port] = agent_meta.te_rpc_port
             logger.info(
-                f"Query te port and kv base addr for request {req_id} from {req_meta_update.remote_host}:{req_meta_update.remote_port} success {agent_meta.kv_caches_base_addr=} {agent_meta.te_rpc_port=}"
+                f"Query to port and kv base addr for request {req_id} from {req_meta_update.remote_host}:{req_meta_update.remote_port} success {agent_meta.kv_caches_base_addr=} {agent_meta.te_rpc_port=}"
             )
         req_meta_update.remote_te_rpc_port = self.remote_te_port[
             req_meta_update.remote_engine_id][req_meta_update.remote_port]
