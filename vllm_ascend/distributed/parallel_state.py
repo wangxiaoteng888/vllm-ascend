@@ -7,6 +7,7 @@ from vllm.distributed.parallel_state import (GroupCoordinator, get_world_group,
 
 import vllm_ascend.envs as envs_ascend
 from vllm_ascend.ascend_config import get_ascend_config
+from vllm_ascend.utils import prefill_context_parallel_enable
 
 # Currently, mc2 op need their own group coordinator.
 _MC2: Optional[GroupCoordinator] = None
@@ -58,9 +59,15 @@ def init_ascend_model_parallel(parallel_config: ParallelConfig, ):
     # The layout of all ranks: ExternalDP * EP
     # ExternalDP is the data parallel group that is not part of the model,
     # every dp rank can generate independently (in verl integration).
-    all_ranks = torch.arange(world_size).reshape(
-        -1, parallel_config.data_parallel_size *
-        parallel_config.tensor_parallel_size)
+    if prefill_context_parallel_enable():
+        all_ranks = torch.arange(world_size).reshape(
+            -1, parallel_config.data_parallel_size *
+            parallel_config.prefill_context_parallel_size *
+            parallel_config.tensor_parallel_size)
+    else:
+        all_ranks = torch.arange(world_size).reshape(
+            -1, parallel_config.data_parallel_size *
+            parallel_config.tensor_parallel_size)
 
     pd_tp_ratio = get_ascend_config().pd_tp_ratio
     pd_head_ratio = get_ascend_config().pd_head_ratio
@@ -89,7 +96,8 @@ def init_ascend_model_parallel(parallel_config: ParallelConfig, ):
                 parallel_config.data_parallel_size, num_head_replica, -1,
                 alltoall_group_size
             )  # [DP_size, num_head_replica, num_alltoall_group, alltoall_group_size]
-            group_ranks = group_ranks.view(-1, alltoall_group_size).unbind(0)
+            group_ranks = group_ranks.reshape(-1,
+                                              alltoall_group_size).unbind(0)
         group_ranks = [x.tolist() for x in group_ranks]
         local_rank = get_world_group().local_rank
         num = next(
