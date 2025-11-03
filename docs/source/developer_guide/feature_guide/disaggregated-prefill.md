@@ -39,7 +39,6 @@ Under the disaggregated-prefill, a global proxy receives external requests, forw
 4. The Proxy calls `select_decoder` to choose a D node and forwards the request.
 5. On the D node, the scheduler marks the request as `RequestStatus.WAITING_FOR_REMOTE_KVS`, pre-allocates KV cache, calls `kv_connector_no_forward` to pull the remote KV cache, then notifies the P node to release KV cache and proceeds with decoding to return the result.
 
-
 #### Mooncake Layerwise Connector:
 
 1. The request is sent to the Proxy’s `_handle_completions` endpoint.
@@ -48,7 +47,6 @@ Under the disaggregated-prefill, a global proxy receives external requests, forw
 4. The Proxy’s `metaserver` endpoint receives the request, calls `select_prefiller` to choose a P node, and forwards it with `kv_transfer_params` set to `do_remote_decode=True`, `max_tokens=1`, and `min_tokens=1`.
 5. During processing, the P node’s scheduler pushes KV cache layer-wise; once all layers pushing is complete, it releases the request and notifies the D node to begin decoding.
 6. The D node performs decoding and returns the result.
-
 
 ### 3. Interface Design
 
