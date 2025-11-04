@@ -31,6 +31,11 @@ Under the disaggregated-prefill, a global proxy receives external requests, forw
 
 ### 2. Implementation Design
 
+Our design diagram is shown below, illustrating the pull and push schemes respectively.
+
+![alt text](../../assets/disaggregated_prefill_pull.png)
+![alt text](../../assets/disaggregated_prefill_push.png)
+
 #### Mooncake Connector:
 
 1. The request is sent to the Proxy’s `_handle_completions` endpoint.
