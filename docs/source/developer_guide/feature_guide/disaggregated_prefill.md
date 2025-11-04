@@ -32,7 +32,6 @@ Under the disaggregated-prefill, a global proxy receives external requests, forw
 ### 2. Implementation Design
 
 Our design diagram is shown below, illustrating the pull and push schemes respectively.
-
 ![alt text](../../assets/disaggregated_prefill_pull.png)
 ![alt text](../../assets/disaggregated_prefill_push.png)
 
@@ -91,7 +90,7 @@ Validate KV transfer config by checking whether the kv_connector type is support
 
 Before startup, perform a port-usage check on configured ports (e.g., rpc_port, metrics_port, http_port/metaserver) by attempting to bind. If a port is already in use, fail fast and log an error.
 
-### 3.PD Ratio Validation
+### 3. PD Ratio Validation
 
 Under non-symmetric PD scenarios, validate the P-to-D tp ratio against expected and scheduling constraints to ensure correct and reliable operation.
 
