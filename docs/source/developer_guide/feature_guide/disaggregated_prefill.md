@@ -1,4 +1,4 @@
-# Feature Design Documentation
+# Disaggregated-prefill
 
 ## Why disaggregated-prefill?
 
@@ -52,7 +52,7 @@ Under the disaggregated-prefill, a global proxy receives external requests, forw
 
 Taking MooncakeConnector as an example, the system is organized into three primary classes:
 - **MooncakeConnector**: Base class that provides core interfaces.
-- **MooncakeConnectorSchedule**: Interface for scheduling the connectors within the engine core, responsible for managing KV cache transfer requirements and completion.
+- **MooncakeConnectorScheduler**: Interface for scheduling the connectors within the engine core, responsible for managing KV cache transfer requirements and completion.
 - **MooncakeConnectorWorker**: Interface for managing KV cache registration and transfer in worker processes.
 
 ### 4. Specifications Design
