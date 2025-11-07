@@ -659,6 +659,17 @@ def enable_sp(vllm_config=None) -> bool:
             # We retain the env VLLM_ASCEND_ENABLE_FLASHCOMM here for backward compatibility.
             or bool(int(os.getenv("VLLM_ASCEND_ENABLE_FLASHCOMM", '0'))))
 
+        if not _ENABLE_SP:
+            return _ENABLE_SP
+
+        assert vllm_config.parallel_config.tensor_parallel_size > 1, \
+            "Flash Comm v1 (Sequence Parallelism) is only supported when tp_size > 1."
+
+        assert (
+            not is_moe_model(vllm_config)
+            or vllm_config.parallel_config.enable_expert_parallel
+        ), "Flash Comm v1 (Sequence Parallelism) requires enable_expert_parallel=True for MoE models."
+
     return _ENABLE_SP
 
 
@@ -672,12 +683,22 @@ def prefill_context_parallel_enable() -> bool:
 
 
 def is_moe_model(vllm_config: VllmConfig):
+    """Checks if the model is a MoE model by config"""
     global _IS_MOE_MODEL
     if _IS_MOE_MODEL is None:
-        config = vllm_config.model_config.hf_config
-        _IS_MOE_MODEL = any('experts' in key.lower()
-                            for key in config.to_dict())
+        model_configs = vllm_config.model_config.hf_config.to_dict()
+        _IS_MOE_MODEL = _is_contain_expert(model_configs)
     return _IS_MOE_MODEL
+
+
+def _is_contain_expert(config: Any):
+    if isinstance(config, dict):
+        for k, v in config.items():
+            if "expert" in str(k):
+                return True
+            if _is_contain_expert(v):
+                return True
+    return False
 
 
 def weak_ref_tensor(tensor: Any) -> Any:
