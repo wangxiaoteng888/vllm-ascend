@@ -8,4 +8,5 @@ This section provides an overview of the features implemented in vLLM Ascend. De
 patch
 ModelRunner_prepare_inputs
 disaggregated_prefill
+ACL_Graph
 :::
