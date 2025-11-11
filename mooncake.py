@@ -19,7 +19,6 @@ import msgspec
 import numpy as np
 import numpy.typing as npt
 import torch
-import torch_npu
 import zmq
 from mooncake.engine import TransferEngine  # type: ignore
 from vllm.config import VllmConfig
@@ -27,7 +26,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
 from vllm.distributed.parallel_state import (get_tensor_model_parallel_rank,
                                              get_tp_group, get_world_group)
-from vllm.utils import logger
+from vllm.utils import get_ip, logger, make_zmq_path, make_zmq_socket
 from vllm.v1.core.sched.output import SchedulerOutput
 
 import vllm_ascend.envs as envs_ascend
@@ -35,12 +34,6 @@ from vllm_ascend.ascend_config import get_ascend_config
 from vllm_ascend.distributed.utils import (align_memory,
                                            get_transfer_timeout_value,
                                            kv_alltoall_and_rearrange)
-from vllm_ascend.utils import vllm_version_is
-
-if vllm_version_is("0.11.0"):
-    from vllm.utils import get_ip, make_zmq_path, make_zmq_socket
-else:
-    from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -75,21 +68,19 @@ class ReqMeta:
 
 class KVCacheSendingLayerThread(threading.Thread):
 
-    def __init__(
-        self,
-        engine: TransferEngine,
-        total_layers: int,
-        ready_event: threading.Event,
-        tp_rank: int,
-        pd_head_ratio: int,
-        num_head_replica: int,
-        kv_cache_base_addr: list[int],
-        use_mla: bool,
-        block_len: list[int],
-        first_kv_cache: torch.Tensor,
-        callback_func: Callable[..., None] = lambda *args, **kwargs: None,
-        # heartbeat query: returns True if peer(host, port) is alive
-        is_peer_alive: Callable[[str, int], bool] = lambda _h, _p: True):
+    def __init__(self,
+                 engine: TransferEngine,
+                 total_layers: int,
+                 ready_event: threading.Event,
+                 tp_rank: int,
+                 pd_head_ratio: int,
+                 num_head_replica: int,
+                 kv_cache_base_addr: list[int],
+                 use_mla: bool,
+                 block_len: list[int],
+                 first_kv_cache: torch.Tensor,
+                 callback_func: Callable[...,
+                                         None] = lambda *args, **kwargs: None):
         super().__init__(daemon=True, name="KVCacheSendingLayerThread")
         self.engine = engine
         self.tp_rank = tp_rank
@@ -99,8 +90,6 @@ class KVCacheSendingLayerThread(threading.Thread):
         self.total_layers = total_layers
         self.use_mla = use_mla
         self.block_len = block_len
-        self.model_stream = torch_npu.npu.current_stream()
-        self.current_layer = -1
 
         if self.pd_head_ratio > 1:
             # regesit kv buffer for tp inequal
@@ -200,9 +189,7 @@ class KVCacheSendingLayerThread(threading.Thread):
                     src_list.append(src)
                     dst_list.append(dst)
                     length_list.append(length)
-            if self.current_layer != layer_index:
-                self.current_layer = layer_index
-                self.model_stream.synchronize()
+            torch.npu.synchronize()
             ret = self.engine.batch_transfer_sync_write(
                 session_id, src_list, dst_list, length_list)
             if ret < 0:
@@ -253,7 +240,7 @@ class KVCacheSendingLayerThread(threading.Thread):
                                     ((self.tp_rank // self.num_head_replica) %
                                      self.pd_head_ratio))
                     src_layer_addr += length
-            self.model_stream.synchronize()
+            torch.npu.synchronize()
             ret = self.engine.batch_transfer_sync_write(
                 session_id, src_list, dst_list, length_list)
             if ret < 0:
@@ -354,14 +341,16 @@ class HeartbeatMonitor(threading.Thread):
     Non-blocking API: add_target(), is_alive().
     """
 
-    def __init__(self, poll_interval: float = 360, timeout: float = 1.0):
+    def __init__(self, poll_interval: float = 60, timeout: float = 1.0):
         super().__init__(daemon=True, name="HeartbeatMonitor")
         self.poll_interval = poll_interval
         self.timeout = timeout
         self._targets_lock = threading.Lock()
         self._targets: dict[tuple[str, int], zmq.Socket] = {}
         self._alive: dict[tuple[str, int], float] = {}
+        # 记录最近一次看到对端存活的时间戳（同 _alive），以及上一次判定状态（True/False）
         self._status: dict[tuple[str, int], bool] = {}
+        # 方便调试：统计收/发次数与丢包（超时）次数
         self._counters: dict[tuple[str, int], dict[str, int]] = {}
         self._stop = threading.Event()
         self._poller = zmq.Poller()  # type: ignore
@@ -464,7 +453,9 @@ class HeartbeatMonitor(threading.Thread):
                             self._counters[key]["recv"] = self._counters.get(
                                 key, {}).get("recv", 0) + 1
                     except Exception:
+                        # 没回/异常都不用紧，下一轮再查
                         pass
+            # 间隔几分钟再查一次
             time.sleep(self.poll_interval)
         # cleanup
         with self._targets_lock:
@@ -1139,6 +1130,7 @@ class MooncakeLayerwiseConnectorWorker:
                 assert self.kv_send_layer_thread is not None
                 self.kv_send_layer_thread.send_queue.put(
                     (req_id, req_meta_update, self.current_layer, key, value))
+                # print("[enqueue] req=%s layer=%d key=%s value=%s",req_id, self.current_layer,getattr(key, "shape", None), getattr(value, "shape", None))
             self.current_layer += 1
 
     def _get_remote_socket(
@@ -1163,6 +1155,11 @@ class MooncakeLayerwiseConnectorWorker:
             return sock
 
     def _peer_watch_loop(self):
+        """
+        每隔 _watch_interval（默认 5s）打印一次：
+        [WATCH] engine=<eng> peer <host>:<port> alive=<True/False>
+        只负责打印，不做清理；用于快速观察心跳状态。
+        """
         while not self._watch_stop.is_set():
             try:
                 with self._peer_lock:
@@ -1180,6 +1177,7 @@ class MooncakeLayerwiseConnectorWorker:
                     logger.info(
                         f"[WATCH] engine={eng} peer {host}:{port} alive={alive}"
                     )
+
                     if not alive:
                         # 仅清理该 peer 的元数据条目（engine_id + port）
                         try:
@@ -1202,12 +1200,14 @@ class MooncakeLayerwiseConnectorWorker:
                             logger.warning(
                                 f"[WATCH] heartbeat.remove_target failed for {host}:{port}: {_e}"
                             )
+
             except Exception as _e:
                 logger.warning(f"[WATCH] loop exception: {_e}")
             time.sleep(self._watch_interval)
 
     def update_decoder_info(self, req_id, req_meta):
         req_meta_update = copy.deepcopy(req_meta)
+        # print(f"before update{req_meta_update}")
         if self.pd_tp_ratio > 1:
             req_meta_update.remote_port = req_meta_update.remote_port + self.tp_rank // self.pd_tp_ratio
         else:
@@ -1235,6 +1235,7 @@ class MooncakeLayerwiseConnectorWorker:
             logger.info(
                 f"Query to port and kv base addr for request {req_id} from {req_meta_update.remote_host}:{req_meta_update.remote_port} success {agent_meta.kv_caches_base_addr=} {agent_meta.te_rpc_port=}"
             )
+            # 注册/更新当前活跃 peer，交由 watcher 持续监听
             self._register_peer(req_meta_update.remote_engine_id,
                                 req_meta_update.remote_host,
                                 req_meta_update.remote_port)
@@ -1242,6 +1243,7 @@ class MooncakeLayerwiseConnectorWorker:
             req_meta_update.remote_engine_id][req_meta_update.remote_port]
         req_meta_update.remote_kv_caches_base_addr = self.remote_kv_caches_base_addr[
             req_meta_update.remote_engine_id][req_meta_update.remote_port]
+        # print(f"after update{req_meta_update}")
         return req_meta_update
 
     def send_done_send_signal(self, req_id, req_meta):
