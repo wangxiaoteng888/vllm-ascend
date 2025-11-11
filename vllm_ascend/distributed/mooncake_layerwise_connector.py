@@ -75,21 +75,18 @@ class ReqMeta:
 
 class KVCacheSendingLayerThread(threading.Thread):
 
-    def __init__(
-        self,
-        engine: TransferEngine,
-        total_layers: int,
-        ready_event: threading.Event,
-        tp_rank: int,
-        pd_head_ratio: int,
-        num_head_replica: int,
-        kv_cache_base_addr: list[int],
-        use_mla: bool,
-        block_len: list[int],
-        first_kv_cache: torch.Tensor,
-        callback_func: Callable[..., None] = lambda *args, **kwargs: None,
-        # heartbeat query: returns True if peer(host, port) is alive
-        is_peer_alive: Callable[[str, int], bool] = lambda _h, _p: True):
+    def __init__(self,
+                 engine: TransferEngine,
+                 total_layers: int,
+                 ready_event: threading.Event,
+                 tp_rank: int,
+                 pd_head_ratio: int,
+                 num_head_replica: int,
+                 kv_cache_base_addr: list[int],
+                 use_mla: bool,
+                 block_len: list[int],
+                 first_kv_cache: torch.Tensor,
+                 callback_func: Callable[..., None] = lambda x: None):
         super().__init__(daemon=True, name="KVCacheSendingLayerThread")
         self.engine = engine
         self.tp_rank = tp_rank
@@ -1181,7 +1178,6 @@ class MooncakeLayerwiseConnectorWorker:
                         f"[WATCH] engine={eng} peer {host}:{port} alive={alive}"
                     )
                     if not alive:
-                        # 仅清理该 peer 的元数据条目（engine_id + port）
                         try:
                             with self._peer_meta_lock:
                                 self.remote_te_port.get(eng,
@@ -1195,7 +1191,6 @@ class MooncakeLayerwiseConnectorWorker:
                             logger.warning(
                                 f"[WATCH] purge meta error for {host}:{port}: {_e}"
                             )
-                        # 同时从心跳监控中移除该目标（会注销 poller 并关闭 socket）
                         try:
                             self.heartbeat.remove_target(host, port)
                         except Exception as _e:
