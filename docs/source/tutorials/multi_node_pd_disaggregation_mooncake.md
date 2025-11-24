@@ -15,7 +15,6 @@ Take the Deepseek-r1-w8a8 model as an example, use 4 Atlas 800T A3 servers to de
 
 ### Verification Process
 
-
 Execute the following commands on each node in sequence. The results must all be `success` and the status must be `UP`:
 
 :::::{tab-set}
@@ -39,6 +38,7 @@ for i in {0..15}; do hccn_tool -i $i -gateway -g ; done
 ```
 
 2. Check NPU network configuration:
+
 Ensure that the hccn.conf file exists in the environment. If using Docker, mount it into the container.
 
 ```bash
@@ -80,6 +80,7 @@ for i in {0..7}; do hccn_tool -i $i -gateway -g ; done
 ```
 
 2. Check NPU network configuration:
+
 Ensure that the hccn.conf file exists in the environment. If using Docker, mount it into the container.
 
 ```bash
@@ -145,101 +146,13 @@ make install
 We can run the following scripts to launch a server on the prefiller/decoder node, respectively. Please note that each P/D node will occupy ports ranging from kv_port to kv_port + num_chips to initialize socket listeners. To avoid any issues, port conflicts should be prevented. Additionally, ensure that each node's engine_id is uniquely assigned to avoid conflicts.
 
 ### launch_online_dp.py
-```python
-import argparse
-import multiprocessing
-import os
-import subprocess
-import sys
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dp-size",
-        type=int,
-        required=True,
-        help="Data parallel size."
-    )
-    parser.add_argument(
-        "--tp-size",
-        type=int,
-        default=1,
-        help="Tensor parallel size."
-    )
-    parser.add_argument(
-        "--dp-size-local",
-        type=int,
-        default=-1,
-        help="Local data parallel size."
-    )
-    parser.add_argument(
-        "--dp-rank-start",
-        type=int,
-        default=0,
-        help="Starting rank for data parallel."
-    )
-    parser.add_argument(
-        "--dp-address",
-        type=str,
-        required=True,
-        help="IP address for data parallel master node."
-    )
-    parser.add_argument(
-        "--dp-rpc-port",
-        type=str,
-        default=12345,
-        help="Port for data parallel master node."
-    )
-    parser.add_argument(
-        "--vllm-start-port",
-        type=int,
-        default=9000,
-        help="Starting port for the engine."
-    )
-    return parser.parse_args()
-args = parse_args()
-dp_size = args.dp_size
-tp_size = args.tp_size
-dp_size_local = args.dp_size_local
-if dp_size_local == -1:
-    dp_size_local = dp_size
-dp_rank_start = args.dp_rank_start
-dp_address = args.dp_address
-dp_rpc_port = args.dp_rpc_port
-vllm_start_port = args.vllm_start_port
-def run_command(visiable_devices, dp_rank, vllm_engine_port):
-    command = [
-        "bash",
-        "./run_dp_template.sh",
-        visiable_devices,
-        str(vllm_engine_port),
-        str(dp_size),
-        str(dp_rank),
-        dp_address,
-        dp_rpc_port,
-        str(tp_size),
-    ]
-    subprocess.run(command, check=True)
-if __name__ == "__main__":
-    template_path = "./run_dp_template.sh"
-    if not os.path.exists(template_path):
-        print(f"Template file {template_path} does not exist.")
-        sys.exit(1)
-    processes = []
-    num_cards = dp_size_local * tp_size
-    for i in range(dp_size_local):
-        dp_rank = dp_rank_start + i
-        vllm_engine_port = vllm_start_port + i
-        visiable_devices = ",".join(str(x) for x in range(i * tp_size, (i + 1) * tp_size))
-        process = multiprocessing.Process(target=run_command,
-                                        args=(visiable_devices, dp_rank,
-                                                vllm_engine_port))
-        processes.append(process)
-        process.start()
-    for process in processes:
-        process.join()
-```
+Use `launch_online_dp.py` to launch external dp vllm servers.
+[launch\_online\_dp.py](https://github.com/vllm-project/vllm-ascend/blob/main/examples/external_online_dp/launch_online_dp.py)
 
 ### run_dp_template.sh
+Modify `run_dp_template.py` on each node.
+[run\_dp\_template.py](https://github.com/vllm-project/vllm-ascend/blob/main/examples/external_online_dp/run_dp_template.sh)
+
 #### Layerwise
 
 :::::{tab-set}
@@ -258,7 +171,6 @@ export HCCL_SOCKET_IFNAME=$nic_name
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-export VLLM_ASCEND_ENABLE_MLAPO=1
 export HCCL_BUFFSIZE=256
 export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
@@ -285,6 +197,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_producer",
@@ -319,7 +232,6 @@ export HCCL_SOCKET_IFNAME=$nic_name
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-export VLLM_ASCEND_ENABLE_MLAPO=1
 export HCCL_BUFFSIZE=256
 export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
@@ -346,6 +258,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_producer",
@@ -406,6 +319,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
@@ -427,7 +341,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
 
 ::::
 
-::::{tab-item} Decoder node 2 (primary Node)
+::::{tab-item} Decoder node 2
 :sync: decoder node2
 
 ```shell
@@ -446,7 +360,6 @@ export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
-export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
@@ -467,6 +380,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
@@ -492,7 +406,6 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
 
 :::::
 
-
 #### Non-layerwise
 
 :::::{tab-set}
@@ -511,13 +424,11 @@ export HCCL_SOCKET_IFNAME=$nic_name
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-export VLLM_ASCEND_ENABLE_MLAPO=1
 export HCCL_BUFFSIZE=256
 export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
-export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
@@ -539,6 +450,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_producer",
@@ -573,13 +485,11 @@ export HCCL_SOCKET_IFNAME=$nic_name
 export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
-export VLLM_ASCEND_ENABLE_MLAPO=1
 export HCCL_BUFFSIZE=256
 export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
-export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
@@ -601,6 +511,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_producer",
@@ -641,7 +552,6 @@ export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
-export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
@@ -662,6 +572,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
@@ -683,7 +594,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
 
 ::::
 
-::::{tab-item} Decoder node 2 (primary Node)
+::::{tab-item} Decoder node 2
 :sync: decoder node2
 
 ```shell
@@ -702,7 +613,6 @@ export TASK_QUEUE_ENABLE=1
 export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
-export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
 vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
@@ -723,6 +633,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
+  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
@@ -748,6 +659,7 @@ vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
 :::::
 
 ### Start the service
+
 ```bash
 # on 190.0.0.1
 python launch_online_dp.py --dp-size 2 --tp-size 8 --dp-size-local 2 --dp-rank-start 0 --dp-address 190.0.0.1 --dp-rpc-port 12321 --vllm-start-port 7100
@@ -769,7 +681,6 @@ Run a proxy server on the same node with the prefiller service instance. You can
 
 ```shell
 python load_balance_proxy_layerwise_server_example.py \
-    --host 192.0.0.1 \
   --port 1999 \
   --host 192.0.0.1 \
   --prefiller-hosts \
@@ -874,10 +785,6 @@ python load_balance_proxy_server_example.py \
 
 :::::
 
-Start the service
-```bash
-  bash server.sh
-```
 |Parameter  | meaning |
 | --- | --- |
 | --port | Proxy service Port |
@@ -890,7 +797,8 @@ Start the service
 | --decoder-hosts-num | Number of repetitions for decoder node hosts |
 | --decoder-ports | Ports of decoder nodes |
 | --decoder-ports-inc | Number of increments for decoder node ports |
-You can get the proxy program in the repository's examples, [load\_balance\_proxy\_server\_example.py](https://github.com/vllm-project/vllm-ascend/blob/v0.9.1-dev/examples/disaggregate_prefill_v1/load_balance_proxy_server_example.py)
+
+You can get the proxy program in the repository's examples, [load\_balance\_proxy\_server\_example.py](https://github.com/vllm-project/vllm-ascend/blob/main/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py)
 
 ## Benchmark
 
@@ -921,12 +829,12 @@ models = [
         abbr='vllm-api-stream-chat',
         path="/root/.cache/ds_r1",
         model="dsr1",
-        request_rate = 28,
+        request_rate = 14,
         retry = 2,
         host_ip = "192.0.0.1", # Proxy service host IP
         host_port = 8000,  # Proxy service Port
         max_out_len = 10,
-        batch_size=1536,
+        batch_size=768,
         trust_remote_code=True,
         generation_kwargs = dict(
             temperature = 0,
@@ -945,13 +853,11 @@ ais_bench --models vllm_api_stream_chat --datasets gsm8k_gen_0_shot_cot_str_perf
 
 - For more details for commands and parameters for aisbench, refer to  [aisbench](https://gitee.com/aisbench/benchmark)
 
-
 ## FAQ
 
 ### 1. Prefiller nodes need to warmup
 
 Since the computation of some NPU operators requires several rounds of warm-up to achieve best performance, we recommend preheating the service with some requests before conducting performance tests to achieve the best end-to-end throughput.
-
 
 ## Verification
 
