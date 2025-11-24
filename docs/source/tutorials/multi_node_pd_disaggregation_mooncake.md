@@ -138,7 +138,6 @@ cd build
 cmake .. -DUSE_ASCEND_DIRECT=ON
 make -j
 make install
-TODO cp to /usr/local
 ```
 
 ## Prefiller/Decoder Deployment
@@ -266,7 +265,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -286,7 +285,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_producer",
@@ -294,7 +292,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "0",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -329,7 +326,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -349,7 +346,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_producer",
@@ -357,7 +353,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "1",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -392,7 +387,7 @@ export HCCL_OP_EXPANSION_MODE="AIV"
 export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -412,7 +407,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_consumer",
@@ -420,7 +414,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "2",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -455,7 +448,7 @@ export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -475,7 +468,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeLayerwiseConnector",
   "kv_role": "kv_consumer",
@@ -483,7 +475,7 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "2",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_layerwise_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
+            
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -527,7 +519,7 @@ export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -547,7 +539,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_producer",
@@ -555,7 +546,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "0",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -591,7 +581,7 @@ export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -611,7 +601,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --quantization ascend \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"enable_shared_expert_dp": true}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_producer",
@@ -619,7 +608,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "1",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -655,7 +643,7 @@ export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -675,7 +663,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_consumer",
@@ -683,7 +670,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "2",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
@@ -718,7 +704,7 @@ export VLLM_USE_V1=1
 export ASCEND_RT_VISIBLE_DEVICES=$1
 export ASCEND_BUFFER_POOL=4:8
 export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/python/site-packages/mooncake:$LD_LIBRARY_PATH
-vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
+vllm serve /path_to_weight/DeepSeek-r1_w8a8_mtp \
   --host 0.0.0.0 \
   --port $2 \
   --data-parallel-size $3 \
@@ -738,7 +724,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   --no-enable-prefix-caching \
   --speculative-config '{"num_speculative_tokens": 1, "method":"deepseek_mtp"}' \
   --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-  --additional-config '{"recompute_scheduler_enable":true,"multistream_overlap_shared_expert": true,"lm_head_tensor_parallel_size":16}' \
   --kv-transfer-config \
   '{"kv_connector": "MooncakeConnector",
   "kv_role": "kv_consumer",
@@ -746,7 +731,6 @@ vllm serve /path_to_weight/DeepSeek-V3.1_w8a8mix_mtp \
   "engine_id": "2",
   "kv_connector_module_path": "vllm_ascend.distributed.mooncake_connector",
   "kv_connector_extra_config": {
-            "use_ascend_direct": true,
             "prefill": {
                     "dp_size": 2,
                     "tp_size": 8
