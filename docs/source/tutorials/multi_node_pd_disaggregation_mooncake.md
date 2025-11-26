@@ -841,13 +841,9 @@ python load_balance_proxy_server_example.py \
 | --port | Proxy service Port |
 | --host | Proxy service Host IP|
 | --prefiller-hosts | Hosts of prefiller nodes |
-| --prefiller-hosts-num | Number of repetitions for prefiller node hosts |
 | --prefiller-ports | Ports of prefiller nodes |
-| --prefiller-ports-inc | Number of increments for prefiller node ports |
 | --decoder-hosts | Hosts of decoder nodes |
-| --decoder-hosts-num | Number of repetitions for decoder node hosts |
 | --decoder-ports | Ports of decoder nodes |
-| --decoder-ports-inc | Number of increments for decoder node ports |
 
 You can get the proxy program in the repository's examples, [load\_balance\_proxy\_server\_example.py](https://github.com/vllm-project/vllm-ascend/blob/main/examples/disaggregated_prefill_v1/load_balance_proxy_server_example.py)
 
