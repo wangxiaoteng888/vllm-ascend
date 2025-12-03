@@ -8,11 +8,12 @@ import queue
 import struct
 import threading
 import time
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
+from uuid import uuid4
 
 import httpx
 import msgspec
@@ -65,6 +66,27 @@ class ReqMeta:
     remote_te_rpc_port: Optional[int]
     remote_kv_caches_base_addr: Optional[list[int]]
     metaserver: Optional[str]
+
+
+@dataclass
+class SizedDict(OrderedDict):
+
+    def __init__(self, max_size=2, *args, **kwargs):
+        self.max_size = max_size
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if len(self) > self.max_size:
+            self.popitem(last=False)
+
+    def __getitem__(self, key):
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            value = {}
+            self[key] = value
+            return value
 
 
 class KVCacheSendingLayerThread(threading.Thread):
@@ -365,7 +387,7 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1):
                  role: KVConnectorRole,
                  kv_cache_config: Optional[KVCacheConfig] = None):
         assert vllm_config.kv_transfer_config is not None
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
+        self.engine_id = f"{vllm_config.kv_transfer_config.engine_id}-{uuid4()}"
         self._connector_metadata = MooncakeLayerwiseConnectorMetadata()
 
         if role == KVConnectorRole.SCHEDULER:
@@ -695,9 +717,9 @@ class MooncakeLayerwiseConnectorWorker:
         self.encoder = msgspec.msgpack.Encoder()
 
         self.remote_kv_caches_base_addr: dict[str, dict[int, list[int]]] = \
-            defaultdict(dict)
+            SizedDict()
         self.remote_te_port: dict[str, dict[int, int]] = \
-            defaultdict(dict)
+            SizedDict()
         self.remote_sockets_lock = threading.Lock()
         self.remote_sockets: dict[  # type: ignore
             str, deque[zmq.Socket]] = defaultdict(  # type: ignore
