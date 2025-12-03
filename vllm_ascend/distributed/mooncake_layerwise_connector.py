@@ -84,7 +84,7 @@ class SizedDict(OrderedDict):
         try:
             return super().__getitem__(key)
         except KeyError:
-            value = {}
+            value: dict[int, list[int]] = {}
             self[key] = value
             return value
 
