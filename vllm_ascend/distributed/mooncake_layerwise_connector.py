@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
-from uuid import uuid4
 
 import httpx
 import msgspec
@@ -387,7 +386,7 @@ class MooncakeLayerwiseConnector(KVConnectorBase_V1):
                  role: KVConnectorRole,
                  kv_cache_config: Optional[KVCacheConfig] = None):
         assert vllm_config.kv_transfer_config is not None
-        self.engine_id = f"{vllm_config.kv_transfer_config.engine_id}-{uuid4()}"
+        self.engine_id = vllm_config.kv_transfer_config.engine_id
         self._connector_metadata = MooncakeLayerwiseConnectorMetadata()
 
         if role == KVConnectorRole.SCHEDULER:
