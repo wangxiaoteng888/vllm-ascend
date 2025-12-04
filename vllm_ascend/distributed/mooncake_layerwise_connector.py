@@ -70,7 +70,7 @@ class ReqMeta:
 @dataclass
 class SizedDict(OrderedDict):
 
-    def __init__(self, max_size=2, *args, **kwargs):
+    def __init__(self, max_size=128, *args, **kwargs):
         self.max_size = max_size
         super().__init__(*args, **kwargs)
 
