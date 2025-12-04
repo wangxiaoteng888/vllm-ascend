@@ -146,7 +146,7 @@ class AscendConfig:
         kv_cfg = vllm_config.kv_transfer_config
         if kv_cfg is not None and not getattr(kv_cfg, "_engine_id_patched",
                                               False):
-            kv_cfg.engine_id = f"{kv_cfg.engine_id}+{uuid4()}"
+            kv_cfg.engine_id = f"{kv_cfg.engine_id}-{uuid4().hex}"
             kv_cfg._engine_id_patched = True
 
 
