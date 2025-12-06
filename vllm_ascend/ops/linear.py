@@ -45,8 +45,9 @@ class AscendUnquantizedLinearMethod(UnquantizedLinearMethod):
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
-        if (is_enable_nz() and torch.version.cann.startswith("8.3") and
-                layer.weight.data.dtype in [torch.float16, torch.bfloat16]):
+        if "conv1d" not in layer.prefix and (
+                is_enable_nz() and layer.weight.data.dtype
+                in [torch.float16, torch.bfloat16]):
             layer.weight.data = torch_npu.npu_format_cast(
                 layer.weight.data, ACL_FORMAT_FRACTAL_NZ)
 
@@ -237,7 +238,9 @@ class AscendRowParallelLinear(RowParallelLinear):
     ):
         compilation_config = get_current_vllm_config().compilation_config
         # TODO(shaopeng-666): Remove the visual check after the mm model reconstruction is complete.
+        # TODO(MengqingCao): Remove the empty string check, after specifying the prefix in linear layers of some models in the vLLM.
         if prefix in compilation_config.static_forward_context and \
+            prefix != "" and \
             "visual" not in prefix:
             raise ValueError(f"Duplicate layer name: {prefix}")
         compilation_config.static_forward_context[prefix] = self
@@ -294,7 +297,7 @@ class AscendRowParallelLinear(RowParallelLinear):
     def forward(
         self,
         input_,
-        is_prefill: bool = True,
+        **kwargs,
     ) -> Union[torch.Tensor, tuple[torch.Tensor, Optional[Parameter]]]:
         if self.custom_op is not None:
             return self.custom_op.apply(input_)

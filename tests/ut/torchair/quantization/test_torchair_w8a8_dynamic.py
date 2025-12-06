@@ -5,7 +5,7 @@ import torch
 from tests.ut.base import TestBase
 from vllm_ascend.torchair.quantization.torchair_w8a8_dynamic import (
     torchair_fused_experts_with_all2all, torchair_fused_experts_with_mc2)
-from vllm_ascend.utils import AscendSocVersion
+from vllm_ascend.utils import AscendDeviceType
 
 
 class TestAscendW8A8FusedMoEMethod(TestBase):
@@ -23,9 +23,9 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
     @patch("torch_npu.npu_swiglu")
     @patch("torch_npu.npu_dynamic_quant")
     @patch("torch_npu.npu_moe_finalize_routing")
-    @patch("torch_npu.npu_moe_init_routing")
+    @patch("torch_npu.npu_moe_init_routing_quant")
     def test_torchair_fused_experts_with_all2all(
-            self, mock_moe_init_routing, mock_moe_finalize_routing,
+            self, mock_npu_moe_init_routing_quant, mock_moe_finalize_routing,
             mock_dynamic_quant, mock_swiglu, mock_grouped_matmul,
             mock_moe_re_routing, mock_all_to_all_single):
 
@@ -38,11 +38,10 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
         placeholder_ones = torch.ones(self.num_tokens, dtype=torch.int32)
         mock_all_to_all_single.side_effect = lambda output, input, *args, **kwargs: output.copy_(
             input)
-        mock_moe_init_routing.return_value = (
-            placeholder_int8,
-            placeholder_ones,
-            placeholder_ones,
-        )
+        mock_npu_moe_init_routing_quant.return_value = (
+            placeholder_int8, placeholder_ones, placeholder_ones,
+            torch.bincount(placeholder_ones, minlength=len(expert_map)),
+            torch.randn(self.num_tokens))
         mock_moe_re_routing.return_value = (placeholder_int8, self.placeholder,
                                             torch.randint(0,
                                                           100,
@@ -80,7 +79,7 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
         'HCCL_INTRA_PCIE_ENABLE': '1'
     })
     @patch(
-        "vllm_ascend.torchair.quantization.torchair_w8a8_dynamic.get_ascend_soc_version"
+        "vllm_ascend.torchair.quantization.torchair_w8a8_dynamic.get_ascend_device_type"
     )
     @patch(
         'vllm_ascend.torchair.quantization.torchair_w8a8_dynamic.get_mc2_group'
@@ -95,7 +94,7 @@ class TestAscendW8A8FusedMoEMethod(TestBase):
             mock_ascend_soc_version):
         """Test expert_scales is passed in A2 SOC version with mc2 optimization"""
         # Setup mocks
-        mock_ascend_soc_version.return_value = AscendSocVersion.A2
+        mock_ascend_soc_version.return_value = AscendDeviceType._910B
 
         mock_group = MagicMock()
         mock_group.rank_in_group = 0

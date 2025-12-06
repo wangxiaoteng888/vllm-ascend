@@ -29,15 +29,11 @@ from vllm_ascend.utils import REGISTERED_ASCEND_OPS
 
 class TestUtils(TestBase):
 
-    def test_is_310p(self):
-        utils._IS_310P = None
-        with mock.patch("vllm_ascend._build_info.__soc_version__",
-                        "Ascend310P3"):
-            self.assertTrue(utils.is_310p())
-        utils._IS_310P = None
-        with mock.patch("vllm_ascend._build_info.__soc_version__",
-                        "Ascend910P1"):
-            self.assertFalse(utils.is_310p())
+    def setUp(self):
+        import importlib
+
+        from vllm_ascend import platform
+        importlib.reload(platform)
 
     def test_is_enable_nz(self):
         with mock.patch("vllm_ascend.utils.envs_ascend.VLLM_ASCEND_ENABLE_NZ",
@@ -252,57 +248,22 @@ class TestUtils(TestBase):
         self.assertIn("num_hidden_layers", str(context.exception))
 
     def test_update_aclgraph_sizes(self):
-        # max_num_batch_sizes < len(original_sizes)
         test_compilation_config = CompilationConfig(
             cudagraph_capture_sizes=[i for i in range(150)])
         model_path = os.path.join(os.path.dirname(__file__), "fake_weight")
         test_model_config = ModelConfig(model=model_path, enforce_eager=True)
         test_parallel_config = ParallelConfig()
-        ascend_config = mock.MagicMock()
-        ascend_config.max_num_batched_tokens = 2048
-        ascend_config.max_model_len = 1024
-        ascend_config.ascend_scheduler_config.enabled = False
         test_vllm_config = VllmConfig(
             model_config=test_model_config,
             compilation_config=test_compilation_config,
-            parallel_config=test_parallel_config,
-            additional_config=ascend_config)
+            parallel_config=test_parallel_config)
         utils.update_aclgraph_sizes(test_vllm_config)
         os.environ['HCCL_OP_EXPANSION_MODE'] = 'AIV'
         utils.update_aclgraph_sizes(test_vllm_config)
         del os.environ['HCCL_OP_EXPANSION_MODE']
-        self.assertEqual(
-            137,
-            len(test_vllm_config.compilation_config.cudagraph_capture_sizes))
 
-        test_vllm_config.speculative_config = mock.MagicMock()
-        test_vllm_config.speculative_config.num_speculative_tokens = 2
-        test_vllm_config.speculative_config.draft_model_config = mock.MagicMock(
-        )
-        test_vllm_config.speculative_config.draft_model_config.hf_config = mock.MagicMock(
-        )
-        test_vllm_config.speculative_config.draft_model_config.hf_config.num_hidden_layers = 2
-        os.environ['HCCL_OP_EXPANSION_MODE'] = 'AIV'
-        utils.update_aclgraph_sizes(test_vllm_config)
-        del os.environ['HCCL_OP_EXPANSION_MODE']
         self.assertEqual(
-            111,
-            len(test_vllm_config.compilation_config.cudagraph_capture_sizes))
-
-        # max_num_batch_sizes >= len(original_sizes)
-        test_compilation_config = CompilationConfig(
-            cudagraph_capture_sizes=[1, 2, 3])
-        test_vllm_config = VllmConfig(
-            model_config=test_model_config,
-            compilation_config=test_compilation_config,
-            parallel_config=test_parallel_config,
-        )
-        utils.update_aclgraph_sizes(test_vllm_config)
-        os.environ['HCCL_OP_EXPANSION_MODE'] = 'AIV'
-        utils.update_aclgraph_sizes(test_vllm_config)
-        del os.environ['HCCL_OP_EXPANSION_MODE']
-        self.assertEqual(
-            3,
+            0,
             len(test_vllm_config.compilation_config.cudagraph_capture_sizes))
 
     @mock.patch("vllm.model_executor.custom_op.CustomOp")

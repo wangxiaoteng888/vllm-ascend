@@ -32,7 +32,7 @@ MODES = [
     "torchair",
     "single",
     "aclgraph",
-    "no_chunkprefill",
+    "aclgraph_mlapo",
 ]
 
 prompts = [
@@ -81,9 +81,6 @@ async def test_models(model: str, mode: str) -> None:
         "method": "deepseek_mtp"
     }
     additional_config = {
-        "ascend_scheduler_config": {
-            "enabled": False
-        },
         "torchair_graph_config": {
             "enabled": True,
             "enable_multistream_moe": False,
@@ -108,10 +105,9 @@ async def test_models(model: str, mode: str) -> None:
         additional_config["torchair_graph_config"] = {"enabled": False}
     if mode == "aclgraph":
         additional_config["torchair_graph_config"] = {"enabled": False}
-    if mode == "no_chunkprefill":
-        additional_config["ascend_scheduler_config"] = {"enabled": True}
-        i = server_args.index("--max-num-batched-tokens") + 1
-        server_args[i] = "36864"
+    if mode == "aclgraph_mlapo":
+        env_dict["VLLM_ASCEND_ENABLE_MLAPO"] = "1"
+        additional_config["torchair_graph_config"] = {"enabled": False}
     server_args.extend(["--additional-config", json.dumps(additional_config)])
     request_keyword_args: dict[str, Any] = {
         **api_keyword_args,
@@ -130,7 +126,7 @@ async def test_models(model: str, mode: str) -> None:
         choices: list[openai.types.CompletionChoice] = batch.choices
         assert choices[0].text, "empty response"
         print(choices)
-        if mode in ["single", "no_chunkprefill"]:
+        if mode in ["single"]:
             return
         # aisbench test
         run_aisbench_cases(model,
