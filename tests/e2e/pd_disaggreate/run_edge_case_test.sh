@@ -82,10 +82,10 @@ run_tests_for_model() {
   BASE_CMD="ASCEND_RT_VISIBLE_DEVICES=1 vllm serve $model_name \
   --port $DECODE_PORT \
   --seed 1024 \
+  --enforce-eager \
   --disable-log-requests \
   --gpu-memory-utilization 0.8 \
   --distributed-executor-backend mp \
-  --compilation-config '{"cudagraph_capture_sizes":[32],"cudagraph_mode": "FULL_DECODE_ONLY"}' \
   --kv-transfer-config '{\"kv_connector\":\"MooncakeConnector\",\"kv_role\":\"kv_consumer\",\"kv_port\":\"30100\",\"engine_id\":\"1\",\"kv_connector_module_path\":\"vllm_ascend.distributed.mooncake_connector\",\"kv_connector_extra_config\":{\"prefill\":{\"dp_size\":1,\"tp_size\":1},\"decode\":{\"dp_size\":1,\"tp_size\":1}}}'"
 
   if [ -n "$model_args" ]; then
