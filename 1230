@@ -1,0 +1,5 @@
+        self.assertIn("req_u2", self.scheduler._reqs_need_send_layerwise)
+        info = self.scheduler._reqs_need_send_layerwise["req_u2"]
+        self.assertEqual(info.local_block_ids, [7, 8, 9])
+        self.assertIs(info.request, req)
+        self.assertEqual(info.remote_block_ids, [])
