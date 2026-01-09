@@ -1154,8 +1154,8 @@ class MooncakeConnectorWorker:
             num_p_block_heads = max(
                 1, self.num_key_value_heads // self._prefill_tp_size)
             self.tp_num_need_pulls = num_d_block_heads // num_p_block_heads
-        self.local_remote_block_port_mapping: dict[str,
-                                                   dict[List[List[int]]]] = {}
+        self.local_remote_block_port_mapping: dict[
+            str, Optional[List[List[int]]]] = {}
         self.remote_port_send_num: dict[str, dict[int, int]] = {}
 
     def _get_prefill_decode_size(self, vllm_config: VllmConfig):
