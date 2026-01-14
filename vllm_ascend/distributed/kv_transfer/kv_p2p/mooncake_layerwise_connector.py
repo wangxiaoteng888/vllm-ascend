@@ -574,6 +574,12 @@ class MooncakeLayerwiseConnectorScheduler:
         self.executor = ThreadPoolExecutor(32)
         self.metaserver_client = httpx.Client(
             limits=httpx.Limits(max_connections=100000), timeout=None)
+        additional_config = self.vllm_config.additional_config if self.vllm_config.additional_config is not None else {}
+        ssl_keyfile = additional_config.get("ssl_keyfile", None)
+        ssl_certfile = additional_config.get("ssl_certfile", None)
+        ssl_ca_certs = additional_config.get("ssl_ca_certs", None)
+        self.cert_path = (ssl_certfile, ssl_keyfile)
+        self.ca_path = ssl_ca_certs
 
     def get_num_new_matched_tokens(
             self, request: "Request",
@@ -648,11 +654,12 @@ class MooncakeLayerwiseConnectorScheduler:
                 remote_host=self.side_channel_host,
                 remote_port=self.side_channel_port,
             )
-            future = self.executor.submit(
-                self._access_metaserver,
-                url=params.get("metaserver", None),
-                message=kv_transfer_params,
-            )
+
+            future = self.executor.submit(self._access_metaserver,
+                                          url=params.get("metaserver", None),
+                                          message=kv_transfer_params,
+                                          cert_path=self.cert_path,
+                                          ca_path=self.ca_path)
 
             def handle_exception(future):
                 if future.exception():
@@ -784,13 +791,19 @@ class MooncakeLayerwiseConnectorScheduler:
                         add_tranfer_task(req_id, send_req_info)
         return meta
 
-    def _access_metaserver(self, url, message):
+    def _access_metaserver(self, url, message, cert_path, ca_path):
         success = False
         retry = 0
         while retry < 3 and success is False:
             retry += 1
             try:
-                self.metaserver_client.post(url, json=message)
+                if ca_path and cert_path != (None, None):
+                    self.metaserver_client.post(url,
+                                                json=message,
+                                                cert=cert_path,
+                                                verify=ca_path)
+                else:
+                    self.metaserver_client.post(url, json=message)
                 success = True
             except Exception as e:
                 logger.error(
