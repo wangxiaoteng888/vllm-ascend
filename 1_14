@@ -1,0 +1,36 @@
+            additional_config = self.vllm_config.additional_config if self.vllm_config.additional_config is not None else {}
+            ssl_keyfile = additional_config.get("ssl_keyfile", None)
+            ssl_certfile = additional_config.get("ssl_certfile", None)
+            ssl_ca_certs = additional_config.get("ssl_ca_certs", None)
+            cert_path = (ssl_certfile, ssl_keyfile)
+            ca_path = ssl_ca_certs
+            future = self.executor.submit(
+                self._access_metaserver,
+                url=params.get("metaserver", None),
+                message=kv_transfer_params,
+                cert_path = cert_path,
+                ca_path =ca_path
+            )
+
+
+
+
+
+
+    def _access_metaserver(self, url, message,cert_path, ca_path):
+        success = False
+        retry = 0
+        while retry < 3 and success is False:
+            retry += 1
+            try:
+                if ca_path:
+                    self.metaserver_client.post(url, json=message , cert = cert_path, verify =ca_path)
+                else:
+                    self.metaserver_client.post(url, json=message)
+                success = True
+            except Exception as e:
+                logger.error(
+                    f"Failed to connect to metaserver: {url}, retry {retry} time."
+                )
+                if retry == 3:
+                    raise e
