@@ -575,9 +575,10 @@ class MooncakeLayerwiseConnectorScheduler:
         ssl_certfile = additional_config.get("ssl_certfile", None)
         ssl_ca_certs = additional_config.get("ssl_ca_certs", None)
         self.cert_path = (ssl_certfile, ssl_keyfile)
+        self.ssl_enable = additional_config.get("ssl_enable", False)
         self.ca_path = ssl_ca_certs
         self.executor = ThreadPoolExecutor(32)
-        if self.ca_path and self.cert_path != (None, None):
+        if self.ssl_enable:
             self.metaserver_client = httpx.Client(
                 limits=httpx.Limits(max_connections=100000),
                 timeout=None,
