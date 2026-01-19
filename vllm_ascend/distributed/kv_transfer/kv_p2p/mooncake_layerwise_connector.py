@@ -574,7 +574,8 @@ class MooncakeLayerwiseConnectorScheduler:
         ssl_keyfile = additional_config.get("ssl_keyfile", None)
         ssl_certfile = additional_config.get("ssl_certfile", None)
         ssl_ca_certs = additional_config.get("ssl_ca_certs", None)
-        self.cert_path = (ssl_certfile, ssl_keyfile)
+        ssl_keyfile_password = additional_config.get("ssl_keyfile_password", None)
+        self.cert_path = (ssl_certfile, ssl_keyfile, ssl_keyfile_password)
         self.ssl_enable = additional_config.get("ssl_enable", False)
         self.ca_path = ssl_ca_certs
         self.executor = ThreadPoolExecutor(32)
