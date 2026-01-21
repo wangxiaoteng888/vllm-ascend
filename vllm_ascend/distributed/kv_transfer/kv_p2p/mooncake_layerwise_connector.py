@@ -570,15 +570,17 @@ class MooncakeLayerwiseConnectorScheduler:
         self._reqs_need_recv: dict[str, tuple[Request, list[int],
                                               list[int]]] = {}
         self._reqs_need_send_layerwise: dict[str, SendReqInfo] = {}
-        additional_config = self.vllm_config.additional_config if self.vllm_config.additional_config is not None else {}
-        ssl_keyfile = additional_config.get("ssl_keyfile", None)
-        ssl_certfile = additional_config.get("ssl_certfile", None)
-        ssl_ca_certs = additional_config.get("ssl_ca_certs", None)
-        ssl_keyfile_password = additional_config.get("ssl_keyfile_password", None)
-        self.cert_path = (ssl_certfile, ssl_keyfile, ssl_keyfile_password)
-        self.ssl_enable = additional_config.get("ssl_enable", False)
-        self.ca_path = ssl_ca_certs
         self.executor = ThreadPoolExecutor(32)
+        tls_config: dict[
+            str, Any] = vllm_config.kv_transfer_config.get_from_extra_config(
+                "tls_config", {})
+        ssl_keyfile = tls_config.get("ssl_keyfile", None)
+        ssl_certfile = tls_config.get("ssl_certfile", None)
+        ssl_ca_certs = tls_config.get("ssl_ca_certs", False)
+        ssl_keyfile_password = tls_config.get("ssl_keyfile_password", None)
+        self.cert_path = (ssl_certfile, ssl_keyfile, ssl_keyfile_password)
+        self.ssl_enable = tls_config.get("ssl_enable", False)
+        self.ca_path = ssl_ca_certs
         if self.ssl_enable:
             self.metaserver_client = httpx.Client(
                 limits=httpx.Limits(max_connections=100000),
