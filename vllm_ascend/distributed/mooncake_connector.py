@@ -435,6 +435,8 @@ class KVCacheRecvingThread(threading.Thread):
                 f"{request_id}: {e}",
                 exc_info=True)
         finally:
+            self._send_done_signal_to_free_remote_port(request_id, remote_host,
+                                                       remote_port_send_num)
             if all_task_done:
                 self.task_tracker.update_done_task_count(request_id)
                 if request_id in self.proc_not_transfer_request:
@@ -446,8 +448,6 @@ class KVCacheRecvingThread(threading.Thread):
             self._send_done_recv_signal(request_id, remote_host,
                                         remote_handshake_port,
                                         remote_port_send_num)
-            self._send_done_signal_to_free_remote_port(request_id, remote_host,
-                                                       remote_port_send_num)
 
     def _send_done_signal_to_free_remote_port(self, request_id, remote_host,
                                               remote_port_send_num):
