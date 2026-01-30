@@ -37,7 +37,7 @@ from vllm_ascend.distributed.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.utils import (align_memory,
                                            get_transfer_timeout_value,
                                            kv_alltoall_and_rearrange)
-from vllm_ascend.utils import npu_stream_switch
+from vllm_ascend.utils import npu_stream_switch, is_vl_model
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -833,6 +833,17 @@ class MooncakeLayerwiseConnectorWorker:
         self.side_channel_host = get_ip()
         self.total_layers = vllm_config.model_config.get_num_layers(
             vllm_config.parallel_config)
+        self.use_mla = self.vllm_config.model_config.use_mla
+        try:
+            if is_vl_model:
+                self.num_kv_head = self.vllm_config.model_config.hf_config.text_config.num_key_value_heads
+            else:
+                self.num_kv_head = self.vllm_config.model_config.hf_config.num_key_value_heads
+        except Exception as e:
+            logger.error(
+                f"MooncakeLayerwise Connector can not get num_key_value_heads from model config, set num_key_value_heads to 1"
+            )
+        self.num_kv_head = 1
 
         # Handshake base port
         self.side_channel_port = (
@@ -1080,11 +1091,10 @@ class MooncakeLayerwiseConnectorWorker:
             if self.use_mla or self.use_sparse:
                 num_need_send = self._decode_tp_size
             else:
-                num_kv_head = self.vllm_config.model_config.hf_config.num_key_value_heads
-                if self.tp_size <= num_kv_head:
+                if self.tp_size <= self.num_kv_head:
                     num_need_send = self.tp_size
                 else:
-                    num_need_send = self._decode_tp_size if self._decode_tp_size >= num_kv_head else num_kv_head
+                    num_need_send = self._decode_tp_size if self._decode_tp_size >= self.num_kv_head else self.num_kv_head
             num_replica_groups = self.tp_size // num_need_send if self.tp_size >= num_need_send else 1
             replica_group_idx = self.tp_rank % num_replica_groups
             req_ids = sorted(list(connector_metadata.requests.keys()))
