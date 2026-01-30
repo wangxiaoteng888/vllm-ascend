@@ -37,7 +37,7 @@ from vllm_ascend.distributed.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.utils import (align_memory,
                                            get_transfer_timeout_value,
                                            kv_alltoall_and_rearrange)
-from vllm_ascend.utils import npu_stream_switch, is_vl_model
+from vllm_ascend.utils import is_vl_model, npu_stream_switch
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
