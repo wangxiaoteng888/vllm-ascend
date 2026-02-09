@@ -1005,7 +1005,7 @@ class MooncakeLayerwiseConnectorWorker:
         remote_pcp_size = req_meta.remote_pcp_size
         remote_dcp_size = req_meta.remote_dcp_size
         remote_tp_size = req_meta.remote_tp_size
-        remote_hosts = [req_meta.remote_host]  # (host,port)对应一台机器,应对远端一个dp组跨机的情况
+        remote_hosts = [req_meta.remote_host]
         remote_port = req_meta.remote_port
         local_transed_tokens = max(req_meta.remote_cache_tokens, req_meta.local_transed_tokens)
         # local_transed_tokens tokens that have already been transmitted on the local side
