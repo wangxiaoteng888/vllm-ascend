@@ -1008,11 +1008,11 @@ class MooncakeLayerwiseConnectorWorker:
         remote_hosts = [req_meta.remote_host]  # (host,port)对应一台机器,应对远端一个dp组跨机的情况
         remote_port = req_meta.remote_port
         local_transed_tokens = max(req_meta.remote_cache_tokens, req_meta.local_transed_tokens)
-        # local_transed_tokens 本端已经传输的tokens
+        # local_transed_tokens tokens that have already been transmitted on the local side
         local_computed_tokens = req_meta.local_computed_tokens
         prompt_len = req_meta.prompt_len
         cp_size = self.pcp_size * self.dcp_size
-        # to_trans_idx 截止到本轮所有已经算过的tokens
+        # to_trans_idx all tokens that have been processed up to the current step
         if req_meta.chunk_finish:
             to_trans_idx = math.ceil(local_computed_tokens / self.block_size)
         else:
@@ -1030,7 +1030,7 @@ class MooncakeLayerwiseConnectorWorker:
         transed_idx = math.floor(local_transed_tokens / self.block_size)
 
         def get_cp_group(tp, heads, dcp):
-            # 划分好一个完备的head_group,[pcp][head_group][dcp]中第二维度，划分出一个完备的head group
+            # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
             step = tp // heads
             return [
                 [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
@@ -1039,7 +1039,6 @@ class MooncakeLayerwiseConnectorWorker:
 
         p_cp_group = get_cp_group(self.tp_size, self.total_num_kv_heads, self.dcp_size)
         d_cp_group = get_cp_group(remote_tp_size, self.total_num_kv_heads, remote_dcp_size)
-        logger.info(f"{remote_tp_size=} {self.total_num_kv_heads=} {remote_dcp_size=}")
 
         cp_ratio = len(p_cp_group) // len(d_cp_group)
         if cp_ratio == 0:
@@ -1056,19 +1055,20 @@ class MooncakeLayerwiseConnectorWorker:
         selected_p_cp_group = []
         selected_d_cp_group = []
         for idx, cp_group in enumerate(selected_p_cp_groups):
-            if p_head_group_rank in cp_group:  # 判断 rank 是否在该子列表中
+            if p_head_group_rank in cp_group:  # Check whether the rank is in selected_p_cp_groups
                 selected_p_cp_group = cp_group
-                # print(f"[===] {idx=} {cp_group=} {p_head_group_rank=}")
                 selected_d_cp_group = selected_d_cp_groups[idx]
         if len(selected_p_cp_group) == 0:
             return {}
 
-        print(f"[===] {req_id=} {selected_p_cp_group=} {selected_d_cp_group=}")
-        # print("hello")
+        logger.debug(
+            f"MooncakeLayerwiseConnector _get_kv_split_metadata {req_id=} "
+            f"P-side selected head_group cp group: {selected_p_cp_group}, "
+            f"D-side selected head_group cp group: {selected_d_cp_group}"
+        )
 
-        # print(f"{p_cp_group=} {d_cp_group=}")
         def context_parallel_parameters_check(remote_pcp_size, remote_dcp_size):
-            # 检查pcp dcp配比是否支持
+            # Check whether the pcp–dcp ratio is supported
             assert (self.pcp_size * self.dcp_size) % (remote_pcp_size * remote_dcp_size) == 0
             if not self.use_mla:
                 p_node_heads_per_rank = math.ceil(self.total_num_kv_heads / self.tp_size)
@@ -1076,10 +1076,13 @@ class MooncakeLayerwiseConnectorWorker:
                 assert d_node_heads_per_rank % p_node_heads_per_rank == 0
 
         def get_tp_rank_head_mapping(num_key_value_heads, tp_size):
+            # Get the head_idx corresponding to the tp_rank, {tp_rank:[head_indx]}
             mapping = {}
             if tp_size <= num_key_value_heads:
                 if num_key_value_heads % tp_size != 0:
-                    raise ValueError(f"头数 ({num_key_value_heads}) 无法被 TP ({tp_size}) 整除，无法均匀分配。")
+                    raise ValueError(
+                        f"Number of heads ({num_key_value_heads}) cannot be evenly divided by TP ({tp_size})."
+                    )
 
                 heads_per_rank = num_key_value_heads // tp_size
 
@@ -1089,7 +1092,9 @@ class MooncakeLayerwiseConnectorWorker:
                     mapping[rank] = list(range(start_idx, end_idx))
             else:
                 if tp_size % num_key_value_heads != 0:
-                    raise ValueError(f"TP ({tp_size}) 无法被头数 ({num_key_value_heads}) 整除，无法均匀复制。")
+                    raise ValueError(
+                        f"Number of heads ({num_key_value_heads}) cannot be evenly divided by TP ({tp_size})."
+                    )
                 ranks_per_head = tp_size // num_key_value_heads
                 for rank in range(tp_size):
                     head_idx = rank // ranks_per_head
@@ -1097,10 +1102,12 @@ class MooncakeLayerwiseConnectorWorker:
             return mapping
 
         def get_head_group_mapping(num_key_value_heads, tp_size, num_groups, select_cp_group):
+            # Get the mapping dictionary, where the key is head_group_rank and the value is head_idx
             if tp_size % num_groups != 0:
-                raise ValueError(f"总卡数 ({tp_size}) 无法被组数 ({num_groups}) 整除。")
-
-            ranks_per_group = tp_size // num_groups  # 每个组包含几张卡
+                raise ValueError(
+                    f"Total number of devices ({tp_size}) cannot be divided by the number of groups ({num_groups})."
+                )
+            ranks_per_group = tp_size // num_groups
             tp_mapping = get_tp_rank_head_mapping(num_key_value_heads, tp_size)
             group_mapping = {}
             for group_rank in range(num_groups):
@@ -1116,7 +1123,6 @@ class MooncakeLayerwiseConnectorWorker:
 
         def get_local_remote_block_port_mappings(
             to_trans_idx,
-            block_size,
             p_pcp_size,
             p_dcp_size,
             p_tp_size,
@@ -1127,57 +1133,34 @@ class MooncakeLayerwiseConnectorWorker:
             d_port,
         ):
             p_head_group_size = p_tp_size // p_dcp_size  # 2
-            # here is problem
             d_head_group_size = d_tp_size // d_dcp_size
             world_size = d_pcp_size * d_head_group_size * d_dcp_size
-            # print(f"")
-            # prompt有多少个block
-            # 每个block对应的 pcp rank, tp rank, dcp rank
-            # P节点：{pcp_rank, tp_rank, dcp_rank} : [logic_block_ids]
-            # D节点：{logic_block_idx : (host, port, pcp_rank, tp_rank, dcp_rank, block_idx)}
-            # P节点这张卡，获取block_idx，len要和local_block_ids一致
+            # Compute which logic_block_idx corresponds to each tp_rank
             p_rank_block_mapping = [
                 [[[] for _ in range(p_dcp_size)] for _ in range(p_head_group_size)] for _ in range(p_pcp_size)
             ]
-            # print(f"{p_dcp_size=} {p_tp_size=} {p_pcp_size=} {prompt_block_size=} {p_rank_block_mapping=}")
             for logic_block_idx in range(to_trans_idx):
-                # pcp_rank = (logic_block_idx // (p_dcp_size * p_pcp_size)) % p_pcp_size
                 pcp_rank = (logic_block_idx // p_dcp_size) % p_pcp_size
                 dcp_rank = logic_block_idx % p_dcp_size
-                # for tp_rank in range(p_tp_size):
-                #     # print(f"{pcp_rank=} {tp_rank=} {dcp_rank=} {logic_block_idx=}")
-                #     p_rank_block_mapping[pcp_rank][tp_rank][dcp_rank].append(logic_block_idx)
-                # 这里的word_rank = pcp_rank*head_group_size*dcp_size + head_group_rank *dcp_size + dcp_rank
                 for p_head_group_rank in range(p_head_group_size):
                     if p_head_group_rank in selected_p_cp_group:
                         p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank].append(logic_block_idx)
-            # d_head_group_size = 2
+
+            # Find the remote device that holds the logic_block_idx
             d_block_rank_mapping = defaultdict(lambda: defaultdict(dict))
             for logic_block_idx in range(to_trans_idx):
-                # pcp_rank = (logic_block_idx // (d_dcp_size * d_pcp_size)) % d_pcp_size
                 pcp_rank = (logic_block_idx // d_dcp_size) % d_pcp_size
-                # tp_rank = [i for i in range(d_tp_size)]
                 d_head_group_size = d_tp_size // d_dcp_size
-                d_num_head_per_world = math.ceil(self.total_num_kv_heads / d_tp_size)
-
                 for d_head_group_rank in range(d_head_group_size):
                     if d_head_group_rank in selected_d_cp_group:
                         dcp_rank = logic_block_idx % d_dcp_size
                         world_rank = (
                             pcp_rank * d_head_group_size * d_dcp_size + d_head_group_rank * d_dcp_size + dcp_rank
                         )
-                        # print(world_rank, dcp_rank)
-                        # world_size = d_pcp_size * d_tp_size
                         world_size = d_pcp_size * d_head_group_size * d_dcp_size
-                        # print(f"[===]{world_size}")
-                        # print(f"{len(d_hosts)=} {logic_block_idx=} {d_dcp_size=} {d_pcp_size=} {d_tp_size=} {world_rank=} {world_size=}")
                         host = d_hosts[(len(d_hosts) * world_rank) // world_size]
                         port = d_port + world_rank
-                        # print(f"[===]{d_port=} {world_rank=} {d_head_group_rank=} {port=} {pcp_rank=} {d_head_group_size=} {d_dcp_size=} {dcp_rank=}")
-                        ### attention 这一步计算对不上
-
                         block_idx = (logic_block_idx - (pcp_rank * d_pcp_size + dcp_rank)) // (d_pcp_size * d_dcp_size)
-
                         d_block_rank_mapping[logic_block_idx][d_head_group_rank] = {
                             "pcp_rank": pcp_rank,
                             "dcp_rank": dcp_rank,
@@ -1185,22 +1168,18 @@ class MooncakeLayerwiseConnectorWorker:
                             "port": port,
                             "block_idx": block_idx,
                         }
-
+            # Get how many times each device should receive done_single for this request
             d_trans_count_mapping = {}
-            trans_block_size = math.ceil(prompt_len / self.block_size)  # 总的block数量
+            trans_block_size = math.ceil(prompt_len / self.block_size)  # Total number of blocks
             transed_block_size = math.ceil(
                 req_meta.remote_cache_tokens / self.block_size
-            )  # prefixcache命中的的block数量
-            to_trans_block_size = trans_block_size - transed_block_size
-            # transed_block_size = transed_idx
+            )  # Number of prefix cache hit blocks
             d_cp_size = d_pcp_size * d_dcp_size
             for d_pcp_rank in range(d_pcp_size):
                 for d_head_group_rank in range(d_head_group_size):
                     for d_dcp_rank in range(d_dcp_size):
-                        # print(f"here {trans_block_size=} {p_pcp_size * p_dcp_size=}")
                         if trans_block_size >= (p_pcp_size * p_dcp_size):
                             trans_count = (p_pcp_size * p_dcp_size) // d_cp_size
-                            # print("123")
                         else:
                             current_rank_idx = d_pcp_rank * d_dcp_size + d_dcp_rank
                             total_global_blocks = transed_block_size + trans_block_size
@@ -1214,69 +1193,49 @@ class MooncakeLayerwiseConnectorWorker:
                                 prev_processed_count += 1
 
                             trans_count = target_total_count - prev_processed_count
-                            # print("456")
-
                         world_rank = (
                             d_pcp_rank * d_head_group_size * d_dcp_size + d_head_group_rank * d_dcp_size + d_dcp_rank
                         )
                         host = d_hosts[(len(d_hosts) * world_rank) // world_size]
                         port = d_port + world_rank
                         d_trans_count_mapping[(host, port)] = trans_count * self.pd_head_ratio
-            # print(f"[===] {d_trans_count_mapping=}{trans_count=}{p_pcp_size=}")
 
-            # p_head_group_repetition = p_tp_size // self.total_num_kv_heads // p_dcp_size
-            # d_head_group_repetition = d_tp_size // self.total_num_kv_heads // d_dcp_size
-            # pd_ratio = d_head_group_repetition // p_head_group_repetition
-            # d_num_head_per_world = math.ceil(self.total_num_kv_heads / d_tp_size)
-            # p_num_head_per_world = math.ceil(self.total_num_kv_heads / p_tp_size)
-            # 需要分类讨论这一块逻辑有问题
-            # 首先计算p的group对应哪些head
-            # p_head_mapping =  {}
+            # Compute the mapping between local and remote head_group_rank
             p_tp_rank_head_mapping = get_head_group_mapping(
                 self.total_num_kv_heads, p_tp_size, p_head_group_size, selected_p_cp_group
             )
             d_tp_rank_head_mapping = get_head_group_mapping(
                 self.total_num_kv_heads, d_tp_size, d_head_group_size, selected_d_cp_group
             )
-
             head_to_d_groups = defaultdict(set)
-
             for d_rank, heads in d_tp_rank_head_mapping.items():
                 for head in heads:
                     head_to_d_groups[head].add(d_rank)
-            # 2. 遍历 P 端，计算映射
             pd_head_mapping = {}
-
             for p_rank, p_heads in p_tp_rank_head_mapping.items():
                 target_d_ranks = set()
-                # 对于当前 P Group 拥有的每一个头
                 for head in p_heads:
-                    # 查找这个头在 D 端由谁负责
                     if head in head_to_d_groups:
-                        # 将对应的 D Group 加入集合
                         target_d_ranks.update(head_to_d_groups[head])
                     else:
-                        # 理论上不应该发生（除非 P 和 D 的总头数定义不一致）
-                        print(f"Warning: Head {head} exists in P but not in D mapping.")
-
-                # 转为有序列表返回
+                        logger.info(f"Warning: Head {head} exists in P but not in D mapping.")
                 pd_head_mapping[p_rank] = sorted(list(target_d_ranks))
-            # print(f"[===] {pd_head_mapping=}")
-
+            logger.debug(
+                f"MooncakeLayerwiseConnector _get_kv_split_metadata {req_id=} "
+                f"P-side logic_block to rank mapping: {p_rank_block_mapping}, "
+                f"D-side logic_block to rank mapping: {d_block_rank_mapping}, "
+                f"P&D head_group_rank mapping: {pd_head_mapping}"
+            )
             return p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping
 
         def get_transfer_mappings(p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping):
-            # 根据P这张卡的block_idx去D节点找对应的d_block_idx和(host, port)
-            # 得到{(host, port): {local_block_ids: [], remote_block_ids: []}}
             transfer_mappings = {}
-            p_head_group_size = self.tp_size // self.dcp_size
             p_head_group_rank = (self.tp_rank - self.dcp_rank) // self.dcp_size
             p_block_idxs = p_rank_block_mapping[self.pcp_rank][p_head_group_rank][self.dcp_rank]
             for p_block_idx, logic_block_idx in enumerate(p_block_idxs):
                 if logic_block_idx < transed_idx or logic_block_idx >= to_trans_idx:
                     continue
                 for d_head_group_rank in pd_head_mapping[p_head_group_rank]:
-                    # print(f"[====]{pd_head_mapping[p_head_group_rank]=} {p_block_idx=} {local_block_ids=} {p_block_idxs=}")
                     p_block_id = local_block_ids[p_block_idx]
                     remote_host = d_block_rank_mapping[logic_block_idx][d_head_group_rank]["host"]
                     remote_port = d_block_rank_mapping[logic_block_idx][d_head_group_rank]["port"]
@@ -1292,6 +1251,7 @@ class MooncakeLayerwiseConnectorWorker:
                     transfer_mappings[(remote_host, remote_port)]["remote_block_ids"].append(d_block_id)
             for (host, port), block_dict in transfer_mappings.items():
                 block_dict["trans_count"] = d_trans_count_mapping[(host, port)]
+            logger.debug(f"MooncakeLayerwiseConnector Request {req_id} transfer tasks: {transfer_mappings}")
             return transfer_mappings
 
         context_parallel_parameters_check(remote_pcp_size, remote_dcp_size)
@@ -1312,7 +1272,6 @@ class MooncakeLayerwiseConnectorWorker:
         transfer_mappings = get_transfer_mappings(
             p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping
         )
-        print(f"[===] trans_task {req_id=} {transfer_mappings=} ")
         return transfer_mappings
 
     def start_load_kv(self, metadata: MooncakeLayerwiseConnectorMetadata):
@@ -1331,8 +1290,6 @@ class MooncakeLayerwiseConnectorWorker:
             for req_idx, (req_id, req_meta) in enumerate(metadata.requests.items()):
                 self._decode_tp_size = req_meta.remote_tp_size
                 transfer_mappings = self._get_kv_split_metadata(req_meta, req_idx, req_id)
-                # print(f"[===]{transfer_mappings=}")
-                # logger.info(f"MooncakeLayerwiseConnector start_load_kv: req:{req_id}, {transfer_mappings=}")
                 assert len(transfer_mappings) <= 1, f"Not support add mutil transfer task for req_id:{req_id}"
                 update_req_meta = copy.deepcopy(req_meta)
                 for (host, port), block_dict in transfer_mappings.items():
