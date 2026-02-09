@@ -1262,7 +1262,6 @@ class MooncakeLayerwiseConnectorWorker:
         p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping = (
             get_local_remote_block_port_mappings(
                 to_trans_idx,
-                self.block_size,
                 self.pcp_size,
                 self.dcp_size,
                 self.tp_size,
