@@ -1033,7 +1033,7 @@ class MooncakeLayerwiseConnectorWorker:
             # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
             step = tp // heads
             if step == 0:
-                return [i for i in range(tp//dcp)]
+                return [[i for i in range(tp//dcp)]]
             else:
                 return [
                     [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
@@ -1042,6 +1042,7 @@ class MooncakeLayerwiseConnectorWorker:
 
         p_cp_group = get_cp_group(self.tp_size, self.total_num_kv_heads, self.dcp_size)
         d_cp_group = get_cp_group(remote_tp_size, self.total_num_kv_heads, remote_dcp_size)
+        logger.debug(f"Compute cp group for P&D {p_cp_group=} {d_cp_group=}")
 
         cp_ratio = len(p_cp_group) // len(d_cp_group)
         if cp_ratio == 0:
