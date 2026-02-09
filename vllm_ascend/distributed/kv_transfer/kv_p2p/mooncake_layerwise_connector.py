@@ -755,7 +755,7 @@ class MooncakeLayerwiseConnectorScheduler:
                             local_transed_tokens=local_transed_tokens,
                         )
                         logger.debug(
-                            f"MooncakeLayerwiseConnector build_connector_meta: {req_id=} prompt_len={len(request.all_token_ids)} local_computed_tokens={local_computed_tokens=}  {local_transed_tokens=} remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')} {chunk_finish=}, {local_block_ids=} remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
+                            f"MooncakeLayerwiseConnector build_connector_meta: {req_id=} prompt_len={len(request.all_token_ids)} {local_computed_tokens=}  {local_transed_tokens=} remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')} {chunk_finish=}, {local_block_ids=} remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
                         )
 
                     # whether chunk finish
@@ -1032,10 +1032,13 @@ class MooncakeLayerwiseConnectorWorker:
         def get_cp_group(tp, heads, dcp):
             # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
             step = tp // heads
-            return [
-                [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
-                for i in range(step // dcp)
-            ]
+            if step == 0:
+                return [i for i in range(tp//dcp)]
+            else:
+                return [
+                    [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
+                    for i in range(step // dcp)
+                ]
 
         p_cp_group = get_cp_group(self.tp_size, self.total_num_kv_heads, self.dcp_size)
         d_cp_group = get_cp_group(remote_tp_size, self.total_num_kv_heads, remote_dcp_size)
