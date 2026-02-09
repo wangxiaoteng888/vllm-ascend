@@ -1,0 +1,14 @@
+        if self.is_kv_producer:
+            attn_metadata.reshape_cache_event = torch.npu.Event()
+
+        if self.is_kv_producer:
+            attn_metadata.reshape_cache_event.record()
+#mla_cp
+
+            if self.is_kv_producer:
+                attn_metadata.reshape_cache_event = torch.npu.Event()
+
+            if self.is_kv_producer:
+                attn_metadata.reshape_cache_event.record()
+
+#atten_cp
