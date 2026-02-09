@@ -113,6 +113,9 @@ class SendReqInfo:
     local_computed_tokens: int
     request: "Request"
 
+    def extend_local_block_ids(self, new_block_ids: list[int]) -> None:
+        """extend local block ids for this step"""
+        self.local_block_ids.extend(new_block_ids)
 
     def update_computed_tokens(self, computed_tokens: int) -> None:
         """update local computen tokens for this step"""
@@ -674,8 +677,6 @@ class MooncakeLayerwiseConnectorScheduler:
             local_computed_tokens = 0
             self._reqs_need_send_layerwise[request.request_id] = SendReqInfo(
                 local_block_ids=local_block_ids,
-                remote_block_ids=remote_block_ids,
-                remote_cache_tokens=remote_cache_tokens,
                 local_transferred_tokens=local_transferred_tokens,
                 local_computed_tokens=local_computed_tokens,
                 request=request,
@@ -707,7 +708,11 @@ class MooncakeLayerwiseConnectorScheduler:
             cached_reqs = scheduler_output.scheduled_cached_reqs
             new_reqs = scheduler_output.scheduled_new_reqs
             scheduled_spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
-
+            for req_id, new_blocks in zip(cached_reqs.req_ids,
+                                          cached_reqs.new_block_ids):
+                if req_id in self._reqs_need_send_layerwise and new_blocks is not None:
+                    self._reqs_need_send_layerwise[
+                        req_id].extend_local_block_ids(new_blocks[0])
             computed_tokens = dict(
                 list(zip(cached_reqs.req_ids, cached_reqs.num_computed_tokens))
                 + [(x.req_id, x.num_computed_tokens) for x in new_reqs]
@@ -1254,7 +1259,6 @@ class MooncakeLayerwiseConnectorWorker:
             return p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping
 
         def get_transfer_mappings(p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping):
-            # print(f"[===]  {p_rank_block_mapping=} {d_block_rank_mapping=} {pd_head_mapping=} {d_trans_count_mapping=}")
             # 根据P这张卡的block_idx去D节点找对应的d_block_idx和(host, port)
             # 得到{(host, port): {local_block_ids: [], remote_block_ids: []}}
             transfer_mappings = {}
@@ -1455,8 +1459,9 @@ class MooncakeLayerwiseConnectorWorker:
             try:
                 encoded_data = self.encoder.encode((GET_META_MSG, req_id))
                 sock = self._get_remote_socket(req_meta.remote_host, req_meta.remote_port)
-                ensure_zmq_send(sock, encoded_data)
-                metadata_bytes = ensure_zmq_recv(sock, self.remote_poller)
+                path = f"{req_meta.remote_host}:{req_meta.remote_port}" 
+                ensure_zmq_send(sock, encoded_data, path)
+                metadata_bytes = ensure_zmq_recv(sock, self.remote_poller, path)
                 agent_meta = self.decoder.decode(metadata_bytes)
             except Exception as e:
                 logger.error(
