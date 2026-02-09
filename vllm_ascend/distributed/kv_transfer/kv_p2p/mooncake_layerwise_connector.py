@@ -23,28 +23,25 @@ import torch_npu
 import zmq
 from mooncake.engine import TransferEngine  # type: ignore
 from vllm.config import VllmConfig
-from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole
-from vllm.distributed.parallel_state import (
-    get_decode_context_model_parallel_rank,
-    get_tensor_model_parallel_rank,
-    get_tp_group,
-    get_world_group,
-)
-from vllm.logger import logger
 from vllm.distributed import get_pcp_group
-from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
+from vllm.distributed.kv_transfer.kv_connector.v1.base import (
+    KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
+from vllm.distributed.parallel_state import (
+    get_decode_context_model_parallel_rank, get_tensor_model_parallel_rank,
+    get_tp_group, get_world_group)
+from vllm.logger import logger
 from vllm.utils.math_utils import round_down
+from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
 
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import GET_META_MSG
-from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
+from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import \
+    GET_META_MSG
+from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import \
+    global_te
 from vllm_ascend.distributed.kv_transfer.utils.utils import (
-    align_memory,
-    get_transfer_timeout_value,
-    kv_alltoall_and_rearrange,
-)
+    align_memory, get_transfer_timeout_value, kv_alltoall_and_rearrange)
 from vllm_ascend.utils import npu_stream_switch
 
 # isort: off
@@ -449,15 +446,15 @@ class MooncakeLayerwiseConnectorMetadata(KVConnectorMetadata):
             token_ids=token_ids or [],
             local_block_ids=local_block_ids,
             remote_block_ids=kv_transfer_params.get("remote_block_ids", []),
-            remote_engine_id=kv_transfer_params.get("remote_engine_id", None),
-            remote_host=kv_transfer_params.get("remote_host", None),
-            remote_port=kv_transfer_params.get("remote_port", None),
-            remote_te_rpc_port=kv_transfer_params.get("remote_te_rpc_port", None),
-            remote_kv_caches_base_addr=kv_transfer_params.get("remote_kv_caches_base_addr", None),
-            metaserver=kv_transfer_params.get("metaserver", None),
-            remote_tp_size=kv_transfer_params.get("remote_tp_size", None),
-            remote_pcp_size=kv_transfer_params.get("remote_pcp_size", None),
-            remote_dcp_size=kv_transfer_params.get("remote_dcp_size", None),
+            remote_engine_id=kv_transfer_params.get("remote_engine_id"),
+            remote_host=kv_transfer_params.get("remote_host"),
+            remote_port=kv_transfer_params.get("remote_port"),
+            remote_te_rpc_port=kv_transfer_params.get("remote_te_rpc_port"),
+            remote_kv_caches_base_addr=kv_transfer_params.get("remote_kv_caches_base_addr"),
+            metaserver=kv_transfer_params.get("metaserver"),
+            remote_tp_size=kv_transfer_params.get("remote_tp_size"),
+            remote_pcp_size=kv_transfer_params.get("remote_pcp_size"),
+            remote_dcp_size=kv_transfer_params.get("remote_dcp_size"),
             chunk_finish=chunk_finish,
             remote_cache_tokens=remote_cache_tokens,
             local_computed_tokens=local_computed_tokens,
