@@ -24,11 +24,13 @@ import zmq
 from mooncake.engine import TransferEngine  # type: ignore
 from vllm.config import VllmConfig
 from vllm.distributed import get_pcp_group
-from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-    KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole)
+from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole
 from vllm.distributed.parallel_state import (
-    get_decode_context_model_parallel_rank, get_tensor_model_parallel_rank,
-    get_tp_group, get_world_group)
+    get_decode_context_model_parallel_rank,
+    get_tensor_model_parallel_rank,
+    get_tp_group,
+    get_world_group,
+)
 from vllm.logger import logger
 from vllm.utils.math_utils import round_down
 from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
@@ -36,12 +38,13 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
 
 from vllm_ascend.ascend_config import get_ascend_config
-from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import \
-    GET_META_MSG
-from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import \
-    global_te
+from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import GET_META_MSG
+from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.kv_transfer.utils.utils import (
-    align_memory, get_transfer_timeout_value, kv_alltoall_and_rearrange)
+    align_memory,
+    get_transfer_timeout_value,
+    kv_alltoall_and_rearrange,
+)
 from vllm_ascend.utils import npu_stream_switch
 
 # isort: off
