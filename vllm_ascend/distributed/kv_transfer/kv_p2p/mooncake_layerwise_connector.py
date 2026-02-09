@@ -24,7 +24,12 @@ import zmq
 from mooncake.engine import TransferEngine  # type: ignore
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorBase_V1, KVConnectorMetadata, KVConnectorRole
-from vllm.distributed.parallel_state import  get_decode_context_model_parallel_rank, get_tensor_model_parallel_rank, get_tp_group, get_world_group
+from vllm.distributed.parallel_state import (
+    get_decode_context_model_parallel_rank,
+    get_tensor_model_parallel_rank,
+    get_tp_group,
+    get_world_group,
+)
 from vllm.logger import logger
 from vllm.distributed import get_pcp_group
 from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
@@ -79,6 +84,7 @@ class ReqMeta:
     remote_cache_tokens: int = 0
     local_computed_tokens: int = 0
     local_transed_tokens: int = 0
+
 
 @dataclass
 class SendTask:
@@ -708,11 +714,9 @@ class MooncakeLayerwiseConnectorScheduler:
             cached_reqs = scheduler_output.scheduled_cached_reqs
             new_reqs = scheduler_output.scheduled_new_reqs
             scheduled_spec_decode_tokens = scheduler_output.scheduled_spec_decode_tokens
-            for req_id, new_blocks in zip(cached_reqs.req_ids,
-                                          cached_reqs.new_block_ids):
+            for req_id, new_blocks in zip(cached_reqs.req_ids, cached_reqs.new_block_ids):
                 if req_id in self._reqs_need_send_layerwise and new_blocks is not None:
-                    self._reqs_need_send_layerwise[
-                        req_id].extend_local_block_ids(new_blocks[0])
+                    self._reqs_need_send_layerwise[req_id].extend_local_block_ids(new_blocks[0])
             computed_tokens = dict(
                 list(zip(cached_reqs.req_ids, cached_reqs.num_computed_tokens))
                 + [(x.req_id, x.num_computed_tokens) for x in new_reqs]
@@ -750,8 +754,10 @@ class MooncakeLayerwiseConnectorScheduler:
                             local_computed_tokens=local_computed_tokens,
                             local_transed_tokens=local_transed_tokens,
                         )
-                        logger.debug(f"MooncakeLayerwiseConnector build_connector_meta: {req_id=} prompt_len={len(request.all_token_ids)} local_computed_tokens={local_computed_tokens=}  {local_transed_tokens=} remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')} {chunk_finish=}, {local_block_ids=} remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
-                                     )
+                        logger.debug(
+                            f"MooncakeLayerwiseConnector build_connector_meta: {req_id=} prompt_len={len(request.all_token_ids)} local_computed_tokens={local_computed_tokens=}  {local_transed_tokens=} remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')} {chunk_finish=}, {local_block_ids=} remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
+                        )
+
                     # whether chunk finish
                     chunk_finish = send_req_info.local_computed_tokens >= len(send_req_info.request.all_token_ids)
 
@@ -987,7 +993,9 @@ class MooncakeLayerwiseConnectorWorker:
             else set()
         )
         if len(done_recving) > 0:
-            logger.info(f"Number of completed KV cache recv requests: {len(done_recving)}, receive requests: {done_recving}")
+            logger.info(
+                f"Number of completed KV cache recv requests: {len(done_recving)}, receive requests: {done_recving}"
+            )
         return set(), done_recving
 
     # {(ip, port)]: {local_block_ids: [], remote_block_ids: {}}}
@@ -1010,7 +1018,7 @@ class MooncakeLayerwiseConnectorWorker:
         else:
             to_trans_idx = math.floor(local_computed_tokens / self.block_size)
         prompt_block_size = math.ceil(prompt_len / self.block_size)
-        # 
+        #
         num_local_blocks = prompt_block_size // cp_size + int(
             (prompt_block_size % cp_size) > (self.pcp_rank * self.dcp_size + self.dcp_rank)
         )
@@ -1020,7 +1028,6 @@ class MooncakeLayerwiseConnectorWorker:
         if num_local_blocks == already_send_blocks:
             req_meta.chunk_finish = True
         transed_idx = math.floor(local_transed_tokens / self.block_size)
-
 
         def get_cp_group(tp, heads, dcp):
             # 划分好一个完备的head_group,[pcp][head_group][dcp]中第二维度，划分出一个完备的head group
@@ -1343,7 +1350,11 @@ class MooncakeLayerwiseConnectorWorker:
             if self.pd_head_ratio != 1:
                 send_task = metadata.send_task
                 send_task.rearrange_block_ids = sorted(
-                    {block_id for req_id in metadata.requests.keys() for block_id in metadata.requests[req_id].local_block_ids}
+                    {
+                        block_id
+                        for req_id in metadata.requests.keys()
+                        for block_id in metadata.requests[req_id].local_block_ids
+                    }
                 )
 
                 device = self.k_buffer.device  # type: ignore
@@ -1459,7 +1470,7 @@ class MooncakeLayerwiseConnectorWorker:
             try:
                 encoded_data = self.encoder.encode((GET_META_MSG, req_id))
                 sock = self._get_remote_socket(req_meta.remote_host, req_meta.remote_port)
-                path = f"{req_meta.remote_host}:{req_meta.remote_port}" 
+                path = f"{req_meta.remote_host}:{req_meta.remote_port}"
                 ensure_zmq_send(sock, encoded_data, path)
                 metadata_bytes = ensure_zmq_recv(sock, self.remote_poller, path)
                 agent_meta = self.decoder.decode(metadata_bytes)
