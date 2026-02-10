@@ -755,7 +755,12 @@ class MooncakeLayerwiseConnectorScheduler:
                             local_transed_tokens=local_transed_tokens,
                         )
                         logger.debug(
-                            f"MooncakeLayerwiseConnector build_connector_meta: {req_id=} prompt_len={len(request.all_token_ids)} {local_computed_tokens=}  {local_transed_tokens=} remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')} {chunk_finish=}, {local_block_ids=} remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
+                            f"MooncakeLayerwiseConnector build_connector_meta: {req_id=}"
+                            f"prompt_len={len(request.all_token_ids)} {local_computed_tokens=}"
+                            f"{local_transed_tokens=}"
+                            f"remote_cache_tokens={request.kv_transfer_params.get('remote_cached_tokens')}"
+                            f"{chunk_finish=} {local_block_ids=}"
+                            f"remote_block_ids={request.kv_transfer_params.get('remote_block_ids')}"
                         )
 
                     # whether chunk finish
@@ -1310,11 +1315,7 @@ class MooncakeLayerwiseConnectorWorker:
             if self.pd_head_ratio != 1:
                 send_task = metadata.send_task
                 send_task.rearrange_block_ids = sorted(
-                    {
-                        block_id
-                        for req_id in metadata.requests.keys()
-                        for block_id in metadata.requests[req_id].local_block_ids
-                    }
+                    {block_id for req_id in metadata.requests for block_id in metadata.requests[req_id].local_block_ids}
                 )
 
                 device = self.k_buffer.device  # type: ignore
@@ -1436,7 +1437,9 @@ class MooncakeLayerwiseConnectorWorker:
                 agent_meta = self.decoder.decode(metadata_bytes)
             except Exception as e:
                 logger.error(
-                    f"Query to port and kv base addr for request {req_id} from {req_meta.remote_host}:{req_meta.remote_port} fail with error: {e}"
+                    f"Query to port and kv base addr for request {req_id}"
+                    f"from {req_meta.remote_host}:{req_meta.remote_port}"
+                    f"fail with error: {e}"
                 )
             assert req_meta.remote_engine_id != self.engine_id, (
                 f"Conflict engine id {req_meta.remote_engine_id} with local engine id {self.local_engine_id}."
@@ -1446,7 +1449,9 @@ class MooncakeLayerwiseConnectorWorker:
             )
             self.remote_te_port[req_meta.remote_engine_id][req_meta.remote_port] = agent_meta.te_rpc_port
             logger.info(
-                f"Query to port and kv base addr for request {req_id} from {req_meta.remote_host}:{req_meta.remote_port} success {agent_meta.kv_caches_base_addr=} {agent_meta.te_rpc_port=}"
+                f"Query to port and kv base addr for request {req_id}"
+                f"from {req_meta.remote_host}:{req_meta.remote_port}"
+                f"success {agent_meta.kv_caches_base_addr=} {agent_meta.te_rpc_port=}"
             )
             if self.pd_head_ratio > 1:
                 # for tp inequal, pre-create link to prevent alltoall out of memory
