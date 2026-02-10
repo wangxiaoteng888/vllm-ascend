@@ -44,6 +44,13 @@ from vllm_ascend.distributed.kv_transfer.utils.utils import (
     align_memory,
     get_transfer_timeout_value,
     kv_alltoall_and_rearrange,
+    parallel_info,
+    get_cp_group,
+    context_parallel_parameters_check,
+    get_tp_rank_head_mapping,
+    get_head_group_mapping,
+    get_local_remote_block_port_mappings,
+    get_transfer_mappings,
 )
 from vllm_ascend.utils import npu_stream_switch
 
@@ -1005,8 +1012,6 @@ class MooncakeLayerwiseConnectorWorker:
 
     # {(ip, port)]: {local_block_ids: [], remote_block_ids: {}}}
     def _get_kv_split_metadata(self, req_meta, req_idx, req_id):
-        local_block_ids = req_meta.local_block_ids
-        remote_block_ids = req_meta.remote_block_ids
         remote_pcp_size = req_meta.remote_pcp_size
         remote_dcp_size = req_meta.remote_dcp_size
         remote_tp_size = req_meta.remote_tp_size
@@ -1016,6 +1021,16 @@ class MooncakeLayerwiseConnectorWorker:
         # local_transed_tokens tokens that have already been transmitted on the local side
         local_computed_tokens = req_meta.local_computed_tokens
         prompt_len = req_meta.prompt_len
+        p_parallel_info = parallel_info(
+            tp_size=self.tp_size,
+            pcp_size=self.pcp_size,
+            dcp_size=self.dcp_size,
+        )
+        d_parallel_info = parallel_info(
+            tp_size=remote_tp_size,
+            pcp_size=remote_pcp_size,
+            dcp_size=remote_dcp_size,
+        )
         cp_size = self.pcp_size * self.dcp_size
         # to_trans_idx all tokens that have been processed up to the current step
         if req_meta.chunk_finish:
@@ -1033,17 +1048,6 @@ class MooncakeLayerwiseConnectorWorker:
         if num_local_blocks == already_send_blocks:
             req_meta.chunk_finish = True
         transed_idx = math.floor(local_transed_tokens / self.block_size)
-
-        def get_cp_group(tp, heads, dcp):
-            # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
-            step = tp // heads
-            if step == 0:
-                return [[i for i in range(tp // dcp)]]
-            else:
-                return [
-                    [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
-                    for i in range(step // dcp)
-                ]
 
         p_cp_group = get_cp_group(self.tp_size, self.total_num_kv_heads, self.dcp_size)
         d_cp_group = get_cp_group(remote_tp_size, self.total_num_kv_heads, remote_dcp_size)
@@ -1076,209 +1080,33 @@ class MooncakeLayerwiseConnectorWorker:
             f"D-side selected head_group cp group: {selected_d_cp_group}"
         )
 
-        def context_parallel_parameters_check(remote_pcp_size, remote_dcp_size):
-            # Check whether the pcp–dcp ratio is supported
-            assert (self.pcp_size * self.dcp_size) % (remote_pcp_size * remote_dcp_size) == 0
-            if not self.use_mla:
-                p_node_heads_per_rank = math.ceil(self.total_num_kv_heads / self.tp_size)
-                d_node_heads_per_rank = math.ceil(self.total_num_kv_heads / remote_tp_size)
-                assert d_node_heads_per_rank % p_node_heads_per_rank == 0
-
-        def get_tp_rank_head_mapping(num_key_value_heads, tp_size):
-            # Get the head_idx corresponding to the tp_rank, {tp_rank:[head_indx]}
-            mapping = {}
-            if tp_size <= num_key_value_heads:
-                if num_key_value_heads % tp_size != 0:
-                    raise ValueError(
-                        f"Number of heads ({num_key_value_heads}) cannot be evenly divided by TP ({tp_size})."
-                    )
-
-                heads_per_rank = num_key_value_heads // tp_size
-
-                for rank in range(tp_size):
-                    start_idx = rank * heads_per_rank
-                    end_idx = start_idx + heads_per_rank
-                    mapping[rank] = list(range(start_idx, end_idx))
-            else:
-                if tp_size % num_key_value_heads != 0:
-                    raise ValueError(
-                        f"Number of heads ({num_key_value_heads}) cannot be evenly divided by TP ({tp_size})."
-                    )
-                ranks_per_head = tp_size // num_key_value_heads
-                for rank in range(tp_size):
-                    head_idx = rank // ranks_per_head
-                    mapping[rank] = [head_idx]
-            return mapping
-
-        def get_head_group_mapping(num_key_value_heads, tp_size, num_groups, select_cp_group):
-            # Get the mapping dictionary, where the key is head_group_rank and the value is head_idx
-            if tp_size % num_groups != 0:
-                raise ValueError(
-                    f"Total number of devices ({tp_size}) cannot be divided by the number of groups ({num_groups})."
-                )
-            ranks_per_group = tp_size // num_groups
-            tp_mapping = get_tp_rank_head_mapping(num_key_value_heads, tp_size)
-            group_mapping = {}
-            for group_rank in range(num_groups):
-                if group_rank in select_cp_group:
-                    start_rank = group_rank * ranks_per_group
-                    end_rank = start_rank + ranks_per_group
-                    heads_set = set()
-
-                    for rank in range(start_rank, end_rank):
-                        heads_set.update(tp_mapping[rank])
-                    group_mapping[group_rank] = sorted(list(heads_set))
-            return group_mapping
-
-        def get_local_remote_block_port_mappings(
-            to_trans_idx,
-            p_pcp_size,
-            p_dcp_size,
-            p_tp_size,
-            d_pcp_size,
-            d_dcp_size,
-            d_tp_size,
-            d_hosts,
-            d_port,
-        ):
-            p_head_group_size = p_tp_size // p_dcp_size  # 2
-            d_head_group_size = d_tp_size // d_dcp_size
-            world_size = d_pcp_size * d_head_group_size * d_dcp_size
-            # Compute which logic_block_idx corresponds to each tp_rank
-            p_rank_block_mapping = [
-                [[[] for _ in range(p_dcp_size)] for _ in range(p_head_group_size)] for _ in range(p_pcp_size)
-            ]
-            for logic_block_idx in range(to_trans_idx):
-                pcp_rank = (logic_block_idx // p_dcp_size) % p_pcp_size
-                dcp_rank = logic_block_idx % p_dcp_size
-                for p_head_group_rank in range(p_head_group_size):
-                    if p_head_group_rank in selected_p_cp_group:
-                        p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank].append(logic_block_idx)
-
-            # Find the remote device that holds the logic_block_idx
-            d_block_rank_mapping = defaultdict(lambda: defaultdict(dict))
-            for logic_block_idx in range(to_trans_idx):
-                pcp_rank = (logic_block_idx // d_dcp_size) % d_pcp_size
-                d_head_group_size = d_tp_size // d_dcp_size
-                for d_head_group_rank in range(d_head_group_size):
-                    if d_head_group_rank in selected_d_cp_group:
-                        dcp_rank = logic_block_idx % d_dcp_size
-                        world_rank = (
-                            pcp_rank * d_head_group_size * d_dcp_size + d_head_group_rank * d_dcp_size + dcp_rank
-                        )
-                        world_size = d_pcp_size * d_head_group_size * d_dcp_size
-                        host = d_hosts[(len(d_hosts) * world_rank) // world_size]
-                        port = d_port + world_rank
-                        block_idx = (logic_block_idx - (pcp_rank * d_pcp_size + dcp_rank)) // (d_pcp_size * d_dcp_size)
-                        d_block_rank_mapping[logic_block_idx][d_head_group_rank] = {
-                            "pcp_rank": pcp_rank,
-                            "dcp_rank": dcp_rank,
-                            "host": host,
-                            "port": port,
-                            "block_idx": block_idx,
-                        }
-            # Get how many times each device should receive done_single for this request
-            d_trans_count_mapping = {}
-            trans_block_size = math.ceil(prompt_len / self.block_size)  # Total number of blocks
-            transed_block_size = math.ceil(
-                req_meta.remote_cache_tokens / self.block_size
-            )  # Number of prefix cache hit blocks
-            d_cp_size = d_pcp_size * d_dcp_size
-            for d_pcp_rank in range(d_pcp_size):
-                for d_head_group_rank in range(d_head_group_size):
-                    for d_dcp_rank in range(d_dcp_size):
-                        if trans_block_size >= (p_pcp_size * p_dcp_size):
-                            trans_count = (p_pcp_size * p_dcp_size) // d_cp_size
-                        else:
-                            current_rank_idx = d_pcp_rank * d_dcp_size + d_dcp_rank
-                            total_global_blocks = transed_block_size + trans_block_size
-
-                            target_total_count = total_global_blocks // d_cp_size
-                            if current_rank_idx < (total_global_blocks % d_cp_size):
-                                target_total_count += 1
-
-                            prev_processed_count = transed_block_size // d_cp_size
-                            if current_rank_idx < (transed_block_size % d_cp_size):
-                                prev_processed_count += 1
-
-                            trans_count = target_total_count - prev_processed_count
-                        world_rank = (
-                            d_pcp_rank * d_head_group_size * d_dcp_size + d_head_group_rank * d_dcp_size + d_dcp_rank
-                        )
-                        host = d_hosts[(len(d_hosts) * world_rank) // world_size]
-                        port = d_port + world_rank
-                        d_trans_count_mapping[(host, port)] = trans_count * self.pd_head_ratio
-
-            # Compute the mapping between local and remote head_group_rank
-            p_tp_rank_head_mapping = get_head_group_mapping(
-                self.total_num_kv_heads, p_tp_size, p_head_group_size, selected_p_cp_group
-            )
-            d_tp_rank_head_mapping = get_head_group_mapping(
-                self.total_num_kv_heads, d_tp_size, d_head_group_size, selected_d_cp_group
-            )
-            head_to_d_groups = defaultdict(set)
-            for d_rank, heads in d_tp_rank_head_mapping.items():
-                for head in heads:
-                    head_to_d_groups[head].add(d_rank)
-            pd_head_mapping = {}
-            for p_rank, p_heads in p_tp_rank_head_mapping.items():
-                target_d_ranks = set()
-                for head in p_heads:
-                    if head in head_to_d_groups:
-                        target_d_ranks.update(head_to_d_groups[head])
-                    else:
-                        logger.info(f"Warning: Head {head} exists in P but not in D mapping.")
-                pd_head_mapping[p_rank] = sorted(list(target_d_ranks))
-            logger.debug(
-                f"MooncakeLayerwiseConnector _get_kv_split_metadata {req_id=} "
-                f"P-side logic_block to rank mapping: {p_rank_block_mapping}, "
-                f"D-side logic_block to rank mapping: {d_block_rank_mapping}, "
-                f"P&D head_group_rank mapping: {pd_head_mapping}"
-            )
-            return p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping
-
-        def get_transfer_mappings(p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping):
-            transfer_mappings = {}
-            p_head_group_rank = (self.tp_rank - self.dcp_rank) // self.dcp_size
-            p_block_idxs = p_rank_block_mapping[self.pcp_rank][p_head_group_rank][self.dcp_rank]
-            for p_block_idx, logic_block_idx in enumerate(p_block_idxs):
-                if logic_block_idx < transed_idx or logic_block_idx >= to_trans_idx:
-                    continue
-                for d_head_group_rank in pd_head_mapping[p_head_group_rank]:
-                    p_block_id = local_block_ids[p_block_idx]
-                    remote_host = d_block_rank_mapping[logic_block_idx][d_head_group_rank]["host"]
-                    remote_port = d_block_rank_mapping[logic_block_idx][d_head_group_rank]["port"]
-                    d_block_idx = d_block_rank_mapping[logic_block_idx][d_head_group_rank]["block_idx"]
-                    d_block_id = remote_block_ids[d_block_idx]
-                    if (remote_host, remote_port) not in transfer_mappings:
-                        transfer_mappings[(remote_host, remote_port)] = {
-                            "local_block_ids": [],
-                            "remote_block_ids": [],
-                            "trans_count": 0,
-                        }
-                    transfer_mappings[(remote_host, remote_port)]["local_block_ids"].append(p_block_id)
-                    transfer_mappings[(remote_host, remote_port)]["remote_block_ids"].append(d_block_id)
-            for (host, port), block_dict in transfer_mappings.items():
-                block_dict["trans_count"] = d_trans_count_mapping[(host, port)]
-            logger.debug(f"MooncakeLayerwiseConnector Request {req_id} transfer tasks: {transfer_mappings}")
-            return transfer_mappings
-
-        context_parallel_parameters_check(remote_pcp_size, remote_dcp_size)
+        context_parallel_parameters_check(remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info)
         p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping = (
             get_local_remote_block_port_mappings(
                 to_trans_idx,
-                self.pcp_size,
-                self.dcp_size,
-                self.tp_size,
-                remote_pcp_size,
-                remote_dcp_size,
-                remote_tp_size,
+                p_parallel_info,
+                d_parallel_info,
                 remote_hosts,
                 remote_port,
+                selected_p_cp_group,
+                selected_d_cp_group,
+                prompt_len,
+                self.block_size,
+                req_meta,
+                self.total_num_kv_heads,
+                req_id,
             )
         )
         transfer_mappings = get_transfer_mappings(
-            p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping
+            p_rank_block_mapping,
+            d_block_rank_mapping,
+            pd_head_mapping,
+            d_trans_count_mapping,
+            req_meta,
+            p_parallel_info,
+            req_id,
+            transed_idx,
+            to_trans_idx,
         )
         return transfer_mappings
 
