@@ -1113,6 +1113,9 @@ class MooncakeLayerwiseConnectorWorker:
             req_id,
             transed_idx,
             to_trans_idx,
+            self.tp_rank,
+            self.pcp_rank,
+            self.dcp_rank,
         )
         return transfer_mappings
 

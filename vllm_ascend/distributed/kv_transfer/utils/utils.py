@@ -258,10 +258,13 @@ def get_transfer_mappings(
     req_id,
     transed_idx,
     to_trans_idx,
+    tp_rank,
+    pcp_rank,
+    dcp_rank,
 ):
     transfer_mappings = {}
-    p_head_group_rank = (p_parallel_info.tp_rank - p_parallel_info.dcp_rank) // p_parallel_info.dcp_size
-    p_block_idxs = p_rank_block_mapping[p_parallel_info.pcp_rank][p_head_group_rank][p_parallel_info.dcp_rank]
+    p_head_group_rank = (tp_rank - dcp_rank) // p_parallel_info.dcp_size
+    p_block_idxs = p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank]
     for p_block_idx, logic_block_idx in enumerate(p_block_idxs):
         if logic_block_idx < transed_idx or logic_block_idx >= to_trans_idx:
             continue
