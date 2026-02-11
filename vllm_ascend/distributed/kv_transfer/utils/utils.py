@@ -2,6 +2,7 @@ import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -59,13 +60,13 @@ def get_transfer_timeout_value():
 @dataclass
 class parallel_info:
     tp_size: int
+    pcp_size: int
     dcp_size: int
     use_mla: bool
     pd_head_ratio: int
-    pcp_size: int = 0
 
 
-def get_cp_group(tp, heads, dcp):
+def get_cp_group(tp: int, heads: int, dcp: int):
     # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
     step = tp // heads
     if step == 0:
@@ -78,7 +79,11 @@ def get_cp_group(tp, heads, dcp):
 
 
 def context_parallel_parameters_check(
-    remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info, total_num_kv_heads
+    remote_pcp_size: int,
+    remote_dcp_size: int,
+    p_parallel_info: parallel_info,
+    d_parallel_info: parallel_info,
+    total_num_kv_heads: int,
 ):
     # Check whether the pcp–dcp ratio is supported
     assert (p_parallel_info.pcp_size * p_parallel_info.dcp_size) % (remote_pcp_size * remote_dcp_size) == 0
@@ -88,7 +93,7 @@ def context_parallel_parameters_check(
         assert d_node_heads_per_rank % p_node_heads_per_rank == 0
 
 
-def get_tp_rank_head_mapping(num_key_value_heads, tp_size):
+def get_tp_rank_head_mapping(num_key_value_heads: int, tp_size: int):
     # Get the head_idx corresponding to the tp_rank, {tp_rank:[head_indx]}
     mapping = {}
     if tp_size <= num_key_value_heads:
@@ -111,7 +116,7 @@ def get_tp_rank_head_mapping(num_key_value_heads, tp_size):
     return mapping
 
 
-def get_head_group_mapping(num_key_value_heads, tp_size, num_groups, select_cp_group):
+def get_head_group_mapping(num_key_value_heads: int, tp_size: int, num_groups: int, select_cp_group: list[int]):
     # Get the mapping dictionary, where the key is head_group_rank and the value is head_idx
     if tp_size % num_groups != 0:
         raise ValueError(
@@ -133,24 +138,24 @@ def get_head_group_mapping(num_key_value_heads, tp_size, num_groups, select_cp_g
 
 
 def get_local_remote_block_port_mappings(
-    to_trans_idx,
-    p_parallel_info,
-    d_parallel_info,
-    d_hosts,
-    d_port,
-    selected_p_cp_group,
-    selected_d_cp_group,
-    prompt_len,
-    block_size,
+    to_trans_idx: int,
+    p_parallel_info: parallel_info,
+    d_parallel_info: parallel_info,
+    d_hosts: list[str],
+    d_port: int,
+    selected_p_cp_group: list[int],
+    selected_d_cp_group: list[int],
+    prompt_len: int,
+    block_size: int,
     req_meta,
-    total_num_kv_heads,
-    req_id,
+    total_num_kv_heads: int,
+    req_id: str,
 ):
     p_head_group_size = p_parallel_info.tp_size // p_parallel_info.dcp_size  # 2
     d_head_group_size = d_parallel_info.tp_size // d_parallel_info.dcp_size
     world_size = d_parallel_info.pcp_size * d_head_group_size * d_parallel_info.dcp_size
     # Compute which logic_block_idx corresponds to each tp_rank
-    p_rank_block_mapping = [
+    p_rank_block_mapping: list[list[list[list[int]]]] = [
         [[[] for _ in range(p_parallel_info.dcp_size)] for _ in range(p_head_group_size)]
         for _ in range(p_parallel_info.pcp_size)
     ]
@@ -162,7 +167,7 @@ def get_local_remote_block_port_mappings(
                 p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank].append(logic_block_idx)
 
     # Find the remote device that holds the logic_block_idx
-    d_block_rank_mapping = defaultdict(lambda: defaultdict(dict))
+    d_block_rank_mapping: dict[int, dict[int, dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
     for logic_block_idx in range(to_trans_idx):
         pcp_rank = (logic_block_idx // d_parallel_info.dcp_size) % d_parallel_info.pcp_size
         d_head_group_size = d_parallel_info.tp_size // d_parallel_info.dcp_size
@@ -249,22 +254,22 @@ def get_local_remote_block_port_mappings(
 
 
 def get_transfer_mappings(
-    p_rank_block_mapping,
-    d_block_rank_mapping,
-    pd_head_mapping,
-    d_trans_count_mapping,
+    p_rank_block_mapping: list[list[list[list[int]]]],
+    d_block_rank_mapping: dict[int, dict[int, dict[str, Any]]],
+    pd_head_mapping: dict[int, set],
+    d_trans_count_mapping: dict[tuple[str, int], int],
     req_meta,
-    p_parallel_info,
-    req_id,
-    transed_idx,
-    to_trans_idx,
-    tp_rank,
-    pcp_rank,
-    dcp_rank,
+    p_parallel_info: parallel_info,
+    req_id: str,
+    transed_idx: int,
+    to_trans_idx: int,
+    tp_rank: int,
+    pcp_rank: int,
+    dcp_rank: int,
 ):
-    transfer_mappings = {}
+    transfer_mappings: dict[tuple[str, int], dict[str, Any]] = {}
     p_head_group_rank = (tp_rank - dcp_rank) // p_parallel_info.dcp_size
-    p_block_idxs = p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank]
+    p_block_idxs: list[int] = p_rank_block_mapping[pcp_rank][p_head_group_rank][dcp_rank]
     for p_block_idx, logic_block_idx in enumerate(p_block_idxs):
         if logic_block_idx < transed_idx or logic_block_idx >= to_trans_idx:
             continue

@@ -431,6 +431,7 @@ class MockRequest:
         self.kv_transfer_params = kv_transfer_params or {}
         self.status = status or "running"
         self.output_token_ids = [101, 102]
+        self.num_computed_tokens = 0
 
         self.all_token_ids = list(self.prompt_token_ids)
 

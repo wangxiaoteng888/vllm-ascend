@@ -823,7 +823,7 @@ class MooncakeLayerwiseConnectorWorker:
         self.dcp_size = vllm_config.parallel_config.decode_context_parallel_size
         self.dcp_rank = get_decode_context_model_parallel_rank() if self.dcp_size > 1 else 0
         self.tp_group = get_tp_group()
-        self._decode_tp_size = None
+        self._decode_tp_size: int | None = None
         self.kv_caches: dict[str, torch.Tensor] = {}
         self.side_channel_host = get_ip()
         self.total_layers = vllm_config.model_config.get_num_layers(vllm_config.parallel_config)
