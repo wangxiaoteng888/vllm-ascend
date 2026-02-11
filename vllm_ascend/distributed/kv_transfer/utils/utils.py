@@ -59,10 +59,10 @@ def get_transfer_timeout_value():
 @dataclass
 class parallel_info:
     tp_size: int
-    pcp_size: int = 0
     dcp_size: int
     use_mla: bool
     pd_head_ratio: int
+    pcp_size: int = 0
 
 
 def get_cp_group(tp, heads, dcp):
