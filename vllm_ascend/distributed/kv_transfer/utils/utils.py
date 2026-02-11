@@ -1,13 +1,13 @@
+import math
 import os
+from collections import defaultdict
+from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
+from vllm.logger import logger
 
 from vllm_ascend.distributed.parallel_state import get_p_tp_group
-from dataclasses import dataclass
-import math
-from vllm.logger import logger
-from collections import OrderedDict, defaultdict, deque
 
 
 def kv_alltoall_and_rearrange(pd_tp_ratio: int, key: torch.Tensor, value: torch.TensorType):

@@ -42,15 +42,13 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import GET_ME
 from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.kv_transfer.utils.utils import (
     align_memory,
+    context_parallel_parameters_check,
+    get_cp_group,
+    get_local_remote_block_port_mappings,
+    get_transfer_mappings,
     get_transfer_timeout_value,
     kv_alltoall_and_rearrange,
     parallel_info,
-    get_cp_group,
-    context_parallel_parameters_check,
-    get_tp_rank_head_mapping,
-    get_head_group_mapping,
-    get_local_remote_block_port_mappings,
-    get_transfer_mappings,
 )
 from vllm_ascend.utils import npu_stream_switch
 
