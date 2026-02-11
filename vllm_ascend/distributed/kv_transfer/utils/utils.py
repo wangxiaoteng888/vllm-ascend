@@ -68,12 +68,15 @@ class parallel_info:
 
 def get_cp_group(tp: int, heads: int, dcp: int):
     # Partition the second dimension of [pcp][head_group][dcp] to obtain a complete head group
+    # head_group is all blocks for request in the same head
+    # tp8 dcp2 heads4 return[[0,1,2,3]]
+    # tp8 dcp1 heads4 return[[0,2,4,6],[1,3,5,7]]
     step = tp // heads
     if step == 0:
         return [[i for i in range(tp // dcp)]]
     else:
         return [
-            [k for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)]
+            set([k // dcp for h in range(heads) for k in range(h * step + i * dcp, h * step + (i + 1) * dcp)])
             for i in range(step // dcp)
         ]
 
