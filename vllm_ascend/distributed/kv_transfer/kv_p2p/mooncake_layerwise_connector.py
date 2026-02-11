@@ -1025,11 +1025,15 @@ class MooncakeLayerwiseConnectorWorker:
             tp_size=self.tp_size,
             pcp_size=self.pcp_size,
             dcp_size=self.dcp_size,
+            pd_head_ratio=self.pd_head_ratio,
+            use_mla=self.use_mla,
         )
         d_parallel_info = parallel_info(
             tp_size=remote_tp_size,
             pcp_size=remote_pcp_size,
             dcp_size=remote_dcp_size,
+            pd_head_ratio=self.pd_head_ratio,
+            use_mla=self.use_mla,
         )
         cp_size = self.pcp_size * self.dcp_size
         # to_trans_idx all tokens that have been processed up to the current step
