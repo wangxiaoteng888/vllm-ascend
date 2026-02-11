@@ -1084,7 +1084,9 @@ class MooncakeLayerwiseConnectorWorker:
             f"D-side selected head_group cp group: {selected_d_cp_group}"
         )
 
-        context_parallel_parameters_check(remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info)
+        context_parallel_parameters_check(
+            remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info, self.total_num_kv_heads
+        )
         p_rank_block_mapping, d_block_rank_mapping, pd_head_mapping, d_trans_count_mapping = (
             get_local_remote_block_port_mappings(
                 to_trans_idx,

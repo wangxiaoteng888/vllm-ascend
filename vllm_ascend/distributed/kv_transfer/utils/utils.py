@@ -77,12 +77,14 @@ def get_cp_group(tp, heads, dcp):
         ]
 
 
-def context_parallel_parameters_check(remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info):
+def context_parallel_parameters_check(
+    remote_pcp_size, remote_dcp_size, p_parallel_info, d_parallel_info, total_num_kv_heads
+):
     # Check whether the pcp–dcp ratio is supported
     assert (p_parallel_info.pcp_size * p_parallel_info.dcp_size) % (remote_pcp_size * remote_dcp_size) == 0
     if not p_parallel_info.use_mla:
-        p_node_heads_per_rank = math.ceil(p_parallel_info.total_num_kv_heads / p_parallel_info.tp_size)
-        d_node_heads_per_rank = math.ceil(p_parallel_info.total_num_kv_heads / d_parallel_info.dcp_size)
+        p_node_heads_per_rank = math.ceil(total_num_kv_heads / p_parallel_info.tp_size)
+        d_node_heads_per_rank = math.ceil(total_num_kv_heads / d_parallel_info.dcp_size)
         assert d_node_heads_per_rank % p_node_heads_per_rank == 0
 
 
