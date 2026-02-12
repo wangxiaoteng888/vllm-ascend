@@ -154,7 +154,7 @@ def get_local_remote_block_port_mappings(
     total_num_kv_heads: int,
     req_id: str,
 ):
-    p_head_group_size = p_parallel_info.tp_size // p_parallel_info.dcp_size  # 2
+    p_head_group_size = p_parallel_info.tp_size // p_parallel_info.dcp_size
     d_head_group_size = d_parallel_info.tp_size // d_parallel_info.dcp_size
     world_size = d_parallel_info.pcp_size * d_head_group_size * d_parallel_info.dcp_size
     # Compute which logic_block_idx corresponds to each tp_rank
@@ -173,7 +173,6 @@ def get_local_remote_block_port_mappings(
     d_block_rank_mapping: dict[int, dict[int, dict[str, Any]]] = defaultdict(lambda: defaultdict(dict))
     for logic_block_idx in range(to_trans_idx):
         pcp_rank = (logic_block_idx // d_parallel_info.dcp_size) % d_parallel_info.pcp_size
-        d_head_group_size = d_parallel_info.tp_size // d_parallel_info.dcp_size
         for d_head_group_rank in range(d_head_group_size):
             if d_head_group_rank in selected_d_cp_group:
                 dcp_rank = logic_block_idx % d_parallel_info.dcp_size
