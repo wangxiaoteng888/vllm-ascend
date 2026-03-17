@@ -114,6 +114,7 @@ class ReqMeta:
     remote_cache_tokens: int = 0
     local_computed_tokens: int = 0
     local_transed_tokens: int = 0
+    do_virtual: bool = False
 
 
 @dataclass
@@ -587,6 +588,7 @@ class MooncakeLayerwiseConnectorMetadata(KVConnectorMetadata):
             remote_tp_size=kv_transfer_params.get("remote_tp_size"),
             remote_pcp_size=kv_transfer_params.get("remote_pcp_size"),
             remote_dcp_size=kv_transfer_params.get("remote_dcp_size"),
+            do_virtual=kv_transfer_params.get("do_virtual"),
             chunk_finish=chunk_finish,
             remote_cache_tokens=remote_cache_tokens,
             local_computed_tokens=local_computed_tokens,
@@ -1034,6 +1036,7 @@ class MooncakeLayerwiseConnectorWorker:
         # TODO(kunpengW-code): Reuse k_buffer, v_buffer
         self.k_quant_buffer: torch.Tensor | None = None
         self.v_quant_buffer: torch.Tensor | None = None
+        self.virtual_request: set[str] = set()
 
     def create_kv_buffer(self, first_kv_cache_tuple):
         alignment = 2 * 1024 * 1024
@@ -1231,6 +1234,8 @@ class MooncakeLayerwiseConnectorWorker:
             if self.vllm_config.kv_transfer_config.is_kv_consumer
             else set()
         )
+        done_recving.update(self.virtual_request)
+        self.virtual_request = set()
         if len(done_recving) > 0:
             logger.info(
                 f"Number of completed KV cache recv requests: {len(done_recving)}, receive requests: {done_recving}"
@@ -1403,6 +1408,9 @@ class MooncakeLayerwiseConnectorWorker:
         self.current_layer = 0
         if self.vllm_config.kv_transfer_config.is_kv_consumer:
             for req_id, meta in metadata.requests.items():
+                if meta.do_virtual:
+                    self.virtual_request.add(req_id)
+                    continue
                 external_req_id = get_external_request_id(req_id)
                 assert self.kv_recv_layer_thread is not None
                 with self.kv_recv_layer_thread.lock:
