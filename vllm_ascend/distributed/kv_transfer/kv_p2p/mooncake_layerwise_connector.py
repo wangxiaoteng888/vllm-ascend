@@ -765,6 +765,7 @@ class MooncakeLayerwiseConnectorScheduler:
 
     def update_state_after_alloc(self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int):
         params = request.kv_transfer_params
+        do_virtual = params.get("do_virtual")
         logger.debug(
             "MooncakeLayerwiseConnector update_state_after_alloc: num_external_tokens=%s, kv_transfer_params=%s",
             num_external_tokens,
@@ -806,16 +807,16 @@ class MooncakeLayerwiseConnectorScheduler:
                 remote_dcp_size=self.vllm_config.parallel_config.decode_context_parallel_size,
                 remote_cached_tokens=remote_cached_tokens,
             )
+            if not do_virtual:
+                future = self.executor.submit(
+                    self._access_metaserver, url=params.get("metaserver", None), message=kv_transfer_params
+                )
 
-            future = self.executor.submit(
-                self._access_metaserver, url=params.get("metaserver", None), message=kv_transfer_params
-            )
+                def handle_exception(future):
+                    if future.exception():
+                        logger.error(f"Access metaserver fail: {future.exception()}")
 
-            def handle_exception(future):
-                if future.exception():
-                    logger.error(f"Access metaserver fail: {future.exception()}")
-
-            future.add_done_callback(handle_exception)
+                future.add_done_callback(handle_exception)
 
         # Layerwise prefiller add request need send
         if params is not None and params.get("do_remote_decode"):
