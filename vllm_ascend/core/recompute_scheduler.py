@@ -26,16 +26,20 @@ from typing import Any
 from vllm.config import SchedulerConfig, VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorMetadata
 from vllm.distributed.kv_events import KVEventBatch
-from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
-from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
+from vllm.distributed.kv_transfer.kv_connector.v1.base import \
+    KVConnectorMetadata
+from vllm.distributed.kv_transfer.kv_connector.v1.metrics import \
+    KVConnectorStats
 from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
-from vllm.v1.core.sched.request_queue import SchedulingPolicy, create_request_queue
+from vllm.v1.core.sched.request_queue import (SchedulingPolicy,
+                                              create_request_queue)
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs, FinishReason
+from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
+                            EngineCoreOutputs, FinishReason)
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
@@ -63,7 +67,8 @@ def register_ascend_mla_spec_in_manager():
     import sys as _sys
 
     from vllm.v1.core.single_type_kv_cache_manager import FullAttentionManager
-    from vllm.v1.kv_cache_interface import MLAAttentionSpec as AscendMLAAttentionSpec
+    from vllm.v1.kv_cache_interface import \
+        MLAAttentionSpec as AscendMLAAttentionSpec
 
     _stm = _sys.modules.get("vllm.v1.core.single_type_kv_cache_manager")
     if _stm is not None and AscendMLAAttentionSpec not in _stm.spec_manager_map:
@@ -97,7 +102,7 @@ class RecomputeReqInfo:
     output_token_ids: ConstantList
     client_index: int = 0
     all_token_ids: ConstantList
-    prompt_token_ids : list[int]
+    prompt_token_ids: list[int]
     kv_transfer_params: dict[str, Any] | None = None
 
 
@@ -330,7 +335,12 @@ class RecomputeScheduler(Scheduler):
                         self.kv_cache_manager.free(recomputed_req)
                         recomputed_reqs.append(
                             RecomputeReqInfo(
-                                recomputed_req.request_id, recomputed_req.output_token_ids, recomputed_req.client_index, recomputed_req.all_token_ids, recomputed_req.prompt_token_ids, recomputed_req.kv_transfer_params
+                                recomputed_req.request_id,
+                                recomputed_req.output_token_ids,
+                                recomputed_req.client_index,
+                                recomputed_req.all_token_ids,
+                                recomputed_req.prompt_token_ids,
+                                recomputed_req.kv_transfer_params,
                             )
                         )
                         if recomputed_req == request:
@@ -817,6 +827,7 @@ class RecomputeScheduler(Scheduler):
         # return recomputed requests as EngineCoreOutput
         if scheduler_output.recomputed_reqs is not None:
             for req_info in scheduler_output.recomputed_reqs:
+                logger.info(f"Recomputed happen on D Node req_id:{req_info.request_id}")
                 kv_transfer_params = req_info.kv_transfer_params
                 kv_transfer_params["all_token_ids"] = req_info.all_token_ids
                 if "prompt_token_ids" not in kv_transfer_params:
@@ -827,7 +838,7 @@ class RecomputeScheduler(Scheduler):
                         finish_reason=FinishReason.STOP,
                         new_token_ids=[],
                         stop_reason="recomputed",
-                        kv_transfer_params = kv_transfer_params
+                        kv_transfer_params=kv_transfer_params,
                     )
                 )
 
