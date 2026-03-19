@@ -26,20 +26,16 @@ from typing import Any
 from vllm.config import SchedulerConfig, VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorMetadata
 from vllm.distributed.kv_events import KVEventBatch
-from vllm.distributed.kv_transfer.kv_connector.v1.base import \
-    KVConnectorMetadata
-from vllm.distributed.kv_transfer.kv_connector.v1.metrics import \
-    KVConnectorStats
+from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
+from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
 from vllm.v1.core.sched.async_scheduler import AsyncScheduler
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
-from vllm.v1.core.sched.request_queue import (SchedulingPolicy,
-                                              create_request_queue)
+from vllm.v1.core.sched.request_queue import (SchedulingPolicy, create_request_queue)
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
-                            EngineCoreOutputs, FinishReason)
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs, FinishReason
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
