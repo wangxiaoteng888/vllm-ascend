@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, fields
+from typing import Any
 
 from vllm.config import SchedulerConfig, VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorMetadata
@@ -96,6 +97,8 @@ class RecomputeReqInfo:
     output_token_ids: ConstantList
     client_index: int = 0
     all_token_ids: ConstantList
+    prompt_token_ids : list[int]
+    kv_transfer_params: dict[str, Any] | None = None
 
 
 @dataclass
@@ -327,7 +330,7 @@ class RecomputeScheduler(Scheduler):
                         self.kv_cache_manager.free(recomputed_req)
                         recomputed_reqs.append(
                             RecomputeReqInfo(
-                                recomputed_req.request_id, recomputed_req.output_token_ids, recomputed_req.client_index, recomputed_req.all_token_ids
+                                recomputed_req.request_id, recomputed_req.output_token_ids, recomputed_req.client_index, recomputed_req.all_token_ids, recomputed_req.prompt_token_ids, recomputed_req.kv_transfer_params
                             )
                         )
                         if recomputed_req == request:
@@ -814,14 +817,17 @@ class RecomputeScheduler(Scheduler):
         # return recomputed requests as EngineCoreOutput
         if scheduler_output.recomputed_reqs is not None:
             for req_info in scheduler_output.recomputed_reqs:
-                kv_transfer_params = self._free_request(req_info.request_id)
+                kv_transfer_params = req_info.kv_transfer_params
                 kv_transfer_params["all_token_ids"] = req_info.all_token_ids
+                if "prompt_token_ids" not in kv_transfer_params:
+                    kv_transfer_params["prompt_token_ids"] = req_info.prompt_token_ids
                 outputs[req_info.client_index].append(
                     EngineCoreOutput(
                         request_id=req_info.request_id,
                         finish_reason=FinishReason.STOP,
                         new_token_ids=[],
                         stop_reason="recomputed",
+                        kv_transfer_params = kv_transfer_params
                     )
                 )
 
