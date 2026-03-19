@@ -493,6 +493,7 @@ async def _handle_completions(api: str, request: Request):
                         generated_token += content
 
                         stop_reason = choice.get("stop_reason")
+                        kv_transfer_params = choice.get("kv_transfer_params")
                         usage = chunk_json.get("usage", {})
                         completion_tokens = (
                             (completion_tokens + 1)
@@ -500,12 +501,13 @@ async def _handle_completions(api: str, request: Request):
                             else (completion_tokens + usage.get("completion_tokens"))
                         )
                         if stop_reason == "recomputed":
+                            all_token_ids = kv_transfer_params["all_token_ids"]
                             retry = True
                             retry_count += 1
                             if chat_flag:
-                                messages[0]["content"] = origin_prompt + generated_token
+                                messages[0]["content"] = all_token_ids
                             else:
-                                req_data["prompt"] = origin_prompt + generated_token
+                                req_data["prompt"] = all_token_ids
                             req_data["max_tokens"] = origin_max_tokens - completion_tokens + retry_count
                             break
                         if retry_count > 0 and not stream_flag:
