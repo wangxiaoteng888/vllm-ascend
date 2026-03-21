@@ -544,9 +544,11 @@ async def _handle_completions(api: str, request: Request):
                     f"the aborted request {request_id} will be routing to the target "
                     "prefiller when new request is ready to dispatch to it"
                 )
-
-            # After streaming done, release tokens
-            proxy_state.release_decoder(decoder_idx, decoder_score)
+            finally:
+                # Keep req_data_dict for the whole client request: layerwise / recompute
+                # may call metaserver multiple times with the same request_id_key.
+                proxy_state.req_data_dict.pop(request_id_api, None)
+                proxy_state.release_decoder(decoder_idx, decoder_score)
 
         if stream_flag:
             return StreamingResponse(generate_stream(), media_type="text/event-stream")
@@ -587,13 +589,11 @@ async def healthcheck():
 async def metaserver(request: Request):
     prefiller_idx = None
     prefiller_score = None
-    req_dict_key = None
     try:
         kv_transfer_params = await request.json()
 
         request_id_key = kv_transfer_params["request_id"]
         assert request_id_key in proxy_state.req_data_dict
-        req_dict_key = request_id_key
         req_data, request_length, api = proxy_state.req_data_dict[request_id_key]
         origin_request_id = get_origin_request_id(api, request_id_key)
         req_data["kv_transfer_params"] = kv_transfer_params
@@ -622,9 +622,6 @@ async def metaserver(request: Request):
         if prefiller_idx is not None and prefiller_score is not None:
             proxy_state.release_prefiller(prefiller_idx, prefiller_score)
             proxy_state.release_prefiller_kv(prefiller_idx, prefiller_score)
-    finally:
-        if req_dict_key is not None:
-            proxy_state.req_data_dict.pop(req_dict_key, None)
 
 
 if __name__ == "__main__":
