@@ -448,7 +448,7 @@ async def _handle_completions(api: str, request: Request):
         origin_max_tokens = req_data.get("max_tokens", 16)
 
         async def generate_stream():
-            nonlocal released_kv
+            nonlocal released_kv, api
             generated_token = ""
             released_kv = False
             retry_count = 0
@@ -496,7 +496,7 @@ async def _handle_completions(api: str, request: Request):
                         choice = choices[0]
                         prompt_token_ids = choice.get("prompt_token_ids") or chunk_json.get("prompt_token_ids")
                         if prompt_token_ids is not None:
-                            all_token_ids = choice["prompt_token_ids"]
+                            all_token_ids = list(prompt_token_ids)
                             prompt_len = len(all_token_ids)
                             print(f"[=====] {prompt_len=}")
                         if choice.get("token_ids") is not None:
@@ -518,18 +518,18 @@ async def _handle_completions(api: str, request: Request):
                             retry = True
                             retry_count += 1
                             if chat_flag:
-                                messages[0]["content"] = all_token_ids
+                                req_data.pop("messages")
+                                api = "/completions"
+                                req_data["prompt"] = all_token_ids
                             else:
                                 req_data["prompt"] = all_token_ids
-                            print(f"[===] {all_token_ids=} {prompt_len} {request_id=}")
-
                             req_data["max_tokens"] = origin_max_tokens - completion_tokens + retry_count
                             a = req_data["max_tokens"]
                             # print(f"[===] max_tokens{a}, {retry_count=}, {completion_tokens=},{origin_max_tokens=},{request_id=}")
                             break
                         if retry_count > 0 and not stream_flag:
                             if chat_flag:
-                                choice["message"]["content"] = generated_token
+                                choice["text"] = generated_token
                             else:
                                 choice["text"] = generated_token
                             chunk = json.dumps(chunk_json).encode("utf-8")
@@ -621,62 +621,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host=global_args.host, port=global_args.port)
-
-
-
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 11c4268c-8bf2-45e9-9942-7788706413f6 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request d9c911d6-c7b2-4677-acea-80fbc2b56aa6 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request a52e3615-70f3-431f-a154-aafd500a1167 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 467c9621-ee90-46d3-b379-2e341a3548e9 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 2b8d78c3-bc85-4710-a465-5a05e5946a34 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 38504e1a-2395-4c79-a0d4-8166b222ce41 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request a536cddb-9cad-447b-8ced-349c5cc3dcb8 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 8686ca5d-95fe-4dbb-886b-3665ede1d446 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request f8b8a649-9c88-402c-8adc-bf3151308c54 will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 0eaac53a-e617-407a-aff6-186c15a05a5c will be routing to the target prefiller when new request is ready to dispatch to it
-Error during streaming from decoder http://90.90.97.15:30060/v1: 'prompt_token_ids' the aborted request 99ff88d4-32da-4e97-8c4a-0ca6c5c09166 will be routing to the target prefiller when new request is ready to dispatch to it
-
-
-
-
-
-
-
-
-
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] Error in preprocessing prompt inputs
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] Traceback (most recent call last):
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/chat_completion/serving.py", line 295, in render_chat_request
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     conversation, engine_prompts = await self._preprocess_chat(
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/engine/serving.py", line 995, in _preprocess_chat
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     (conversation,), (engine_prompt,) = await renderer.render_chat_async(
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/renderers/base.py", line 755, in render_chat_async
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     for conv, prompt in await asyncio.gather(*rendered):
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/renderers/hf.py", line 682, in render_messages_async
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     conversation, mm_data, mm_uuids = await parse_chat_messages_async(
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/chat_utils.py", line 1567, in parse_chat_messages_async
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     sub_messages = _parse_chat_message_content(
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/chat_utils.py", line 1459, in _parse_chat_message_content
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     result = _parse_chat_message_content_parts(
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/chat_utils.py", line 1334, in _parse_chat_message_content_parts
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     for part in parts:
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] pydantic_core._pydantic_core.ValidationError: 4 validation errors for ValidatorIterator
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] 0.ChatCompletionContentPartTextParam
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   Input should be a valid dictionary [type=dict_type, input_value=151644, input_type=int]
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     For further information visit https://errors.pydantic.dev/2.12/v/dict_type
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] 0.ChatCompletionContentPartImageParam
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   Input should be a valid dictionary [type=dict_type, input_value=151644, input_type=int]
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     For further information visit https://errors.pydantic.dev/2.12/v/dict_type
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] 0.ChatCompletionContentPartInputAudioParam
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   Input should be a valid dictionary [type=dict_type, input_value=151644, input_type=int]
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]     For further information visit https://errors.pydantic.dev/2.12/v/dict_type
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311] 0.File
-(APIServer pid=224744) ERROR 03-20 17:46:58 [serving.py:311]   Input should be a valid dictionary [type=dict_type, input_value=151644, input_type=int]
-
-
