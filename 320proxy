@@ -281,7 +281,11 @@ def parse_args():
 async def lifespan(app: FastAPI):
     global proxy_state
     proxy_state = ProxyState(global_args.prefiller_instances, global_args.decoder_instances)
-    print(f"Initialized {len(proxy_state.prefillers)} prefill clients and {len(proxy_state.decoders)} decode clients.1111")
+    logger.info(
+        "Initialized %d prefill clients and %d decode clients",
+        len(proxy_state.prefillers),
+        len(proxy_state.decoders),
+    )
     yield
     for p in proxy_state.prefillers:
         await p.client.aclose()
@@ -498,7 +502,7 @@ async def _handle_completions(api: str, request: Request):
                         if prompt_token_ids is not None:
                             all_token_ids = list(prompt_token_ids)
                             prompt_len = len(all_token_ids)
-                            print(f"[=====] {prompt_len=}")
+                            logger.debug("prompt_len=%s", prompt_len)
                         if choice.get("token_ids") is not None:
                             all_token_ids.extend(choice["token_ids"])
                         
@@ -581,13 +585,17 @@ async def healthcheck():
 
 @app.post("/v1/metaserver")
 async def metaserver(request: Request):
+    prefiller_idx = None
+    prefiller_score = None
+    req_dict_key = None
     try:
         kv_transfer_params = await request.json()
 
-        request_id = kv_transfer_params["request_id"]
-        assert request_id in proxy_state.req_data_dict
-        req_data, request_length, api = proxy_state.req_data_dict[request_id]
-        request_id = get_origin_request_id(api, request_id)
+        request_id_key = kv_transfer_params["request_id"]
+        assert request_id_key in proxy_state.req_data_dict
+        req_dict_key = request_id_key
+        req_data, request_length, api = proxy_state.req_data_dict[request_id_key]
+        origin_request_id = get_origin_request_id(api, request_id_key)
         req_data["kv_transfer_params"] = kv_transfer_params
         prefiller_score = proxy_state.calculate_prefill_scores(request_length)
         logger.debug(f"Request length: {request_length}, Prefiller score: {prefiller_score}")
@@ -602,7 +610,7 @@ async def metaserver(request: Request):
             prefiller_idx,
             api,
             req_data,
-            request_id,
+            origin_request_id,
             max_retries=global_args.max_retries,
             base_delay=global_args.retry_delay,
         )
@@ -611,8 +619,12 @@ async def metaserver(request: Request):
 
     except Exception as e:
         logger.error(f"Post metaserver failed with: {str(e)}")
-        proxy_state.release_prefiller(prefiller_idx, prefiller_score)
-        proxy_state.release_prefiller_kv(prefiller_idx, prefiller_score)
+        if prefiller_idx is not None and prefiller_score is not None:
+            proxy_state.release_prefiller(prefiller_idx, prefiller_score)
+            proxy_state.release_prefiller_kv(prefiller_idx, prefiller_score)
+    finally:
+        if req_dict_key is not None:
+            proxy_state.req_data_dict.pop(req_dict_key, None)
 
 
 if __name__ == "__main__":
