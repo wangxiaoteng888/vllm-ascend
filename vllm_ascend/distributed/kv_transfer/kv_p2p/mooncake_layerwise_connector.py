@@ -1747,7 +1747,7 @@ class MooncakeLayerwiseConnectorWorker:
             with zmq_ctx(zmq.REQ, path) as sock:  # type: ignore
                 ensure_zmq_send(sock, encoded_data, f"{req_meta.remote_host}:{req_meta.remote_port}")
                 # Avoid blocking forever waiting for the REQ/ACK response.
-                sock.setsockopt(zmq.RCVTIMEO, int(self.timeout * 5000))  # type: ignore
+                sock.setsockopt(zmq.RCVTIMEO, int(self.timeout * 1000))  # type: ignore
                 try:
                     ack = sock.recv()
                 except zmq.Again:  # type: ignore
