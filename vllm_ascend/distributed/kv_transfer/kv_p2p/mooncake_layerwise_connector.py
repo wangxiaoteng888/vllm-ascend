@@ -508,7 +508,6 @@ class KVCacheRecvingLayerThread(threading.Thread):
         self.lock = threading.Lock()
         self.done_requests = set[str]()
         self.task_tracker = dict[str, int]()
-        self.request_map = dict[str, str]()
         self.ready_event = ready_event
         self.metadata = metadata
 
@@ -525,11 +524,12 @@ class KVCacheRecvingLayerThread(threading.Thread):
 
     def update_task(self, req_id, trans_count):
         with self.lock:
+            if req_id not in self.task_tracker:
+                self.task_tracker[req_id] = 0
             self.task_tracker[req_id] += 1
             if self.task_tracker[req_id] == trans_count:
                 self.task_tracker.pop(req_id)
-                self.done_requests.add(self.request_map[req_id])
-                self.request_map.pop(req_id)
+                self.done_requests.add(req_id)
 
     def run(self):
         """Run the thread to handle KV cache transfer requests."""
@@ -1248,8 +1248,14 @@ class MooncakeLayerwiseConnectorWorker:
             if self.vllm_config.kv_transfer_config.is_kv_consumer
             else set()
         )
+        done_recving = {
+            self.kv_recv_layer_thread.request_map[s] for s in done_recving if s in self.kv_recv_layer_thread
+        }
         done_recving.update(self.virtual_request)
         self.virtual_request = set()
+        for req_id in done_recving:
+            req_id = req_id[:-9]
+            self.kv_recv_layer_thread.request_map.pop(req_id, None)
         if len(done_recving) > 0:
             logger.info(
                 f"Number of completed KV cache recv requests: {len(done_recving)}, receive requests: {done_recving}"
