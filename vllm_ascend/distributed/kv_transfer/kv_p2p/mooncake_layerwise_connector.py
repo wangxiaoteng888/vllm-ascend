@@ -1434,7 +1434,8 @@ class MooncakeLayerwiseConnectorWorker:
                 external_req_id = get_external_request_id(req_id)
                 assert self.kv_recv_layer_thread is not None
                 with self.kv_recv_layer_thread.lock:
-                    self.kv_recv_layer_thread.task_tracker[external_req_id] = 0
+                    if external_req_id not in self.kv_recv_layer_thread.task_tracker:
+                        self.kv_recv_layer_thread.task_tracker[external_req_id] = 0
                     self.kv_recv_layer_thread.request_map[external_req_id] = req_id
         elif self.vllm_config.kv_transfer_config.is_kv_producer:
             # update trans info
