@@ -996,7 +996,7 @@ class MooncakeLayerwiseConnectorWorker:
         self.side_channel_host = get_ip()
         self.total_layers = vllm_config.model_config.get_num_layers(vllm_config.parallel_config)
         self.use_mla = self.vllm_config.model_config.use_mla
-        self.request_map = dict[str,str]()
+        self.request_map = dict[str, str]()
         if self.use_mla:
             self.total_num_kv_heads = 1
         else:
@@ -1249,9 +1249,7 @@ class MooncakeLayerwiseConnectorWorker:
             if self.vllm_config.kv_transfer_config.is_kv_consumer
             else set()
         )
-        done_recving = {
-            self.request_map[s] for s in done_recving if s in self.request_map
-        }
+        done_recving = {self.request_map[s] for s in done_recving if s in self.request_map}
         done_recving.update(self.virtual_request)
         self.virtual_request = set()
         for req_id in done_recving:
