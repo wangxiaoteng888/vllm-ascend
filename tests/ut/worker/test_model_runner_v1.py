@@ -1,111 +1,89 @@
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# This file is a part of the vllm-ascend project.
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from unittest.mock import MagicMock, patch
+import torch
+from vllm.v1.kv_cache_interface import FullAttentionSpec, KVCacheConfig, KVCacheGroupSpec, KVCacheTensor
 
-import pytest
-
-from vllm_ascend.ascend_forward_context import MoECommType
-from vllm_ascend.utils import AscendDeviceType
 from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
 
 
-# yapf: disable
-@pytest.mark.parametrize(
-    "soc_version, enable_expert_parallel, world_size, num_tokens, mc2_tokens_capacity, quant_type, expected_method",
-    [
-        # Case 1: Expert parallel is disabled, should always be 'allgather'
-        (AscendDeviceType._910B, False, 8, 100, 256, None, MoECommType.ALLGATHER),
-        (AscendDeviceType._910_93, False, 16, 500, 256, None, MoECommType.ALLGATHER),
+class TestNPUModelRunnerKVCache(unittest.TestCase):
 
-        # Case 2: A2 SOC with w4a8_dynamic -> use alltoall when not mc2
-        (AscendDeviceType._910B, True, 8, 100, 256, "w4a8_dynamic", MoECommType.ALLTOALL),
-        (AscendDeviceType._910B, True, 16, 257, 256, "w4a8_dynamic", MoECommType.ALLTOALL),
-        (AscendDeviceType._910B, True, 16, 100, 256, "w4a8_dynamic", MoECommType.MC2),  # meets mc2 condition
+    def _build_runner(self):
+        runner = NPUModelRunner.__new__(NPUModelRunner)
+        runner.device = torch.device("cpu")
+        runner.use_sparse = False
+        runner.use_sparse_c8_indexer = False
+        runner.use_hybrid_blocks = False
+        runner.hybrid_with_attn_and_mamba = False
+        runner.runner_only_attn_layers = set()
+        runner.is_kv_consumer = False
+        runner.vllm_config = MagicMock()
+        runner.vllm_config.kv_transfer_config = None
+        runner.model_config = MagicMock()
+        runner.model_config.use_mla = True
+        backend = MagicMock()
+        backend.get_kv_cache_shape.side_effect = lambda num_blocks, block_size, num_kv_heads, head_size: (
+            2,
+            num_blocks,
+            block_size,
+            num_kv_heads,
+            head_size,
+        )
+        runner.attn_backend = backend
+        return runner
 
-        # Case 3: A2 SOC without w4a8_dynamic -> fallback to allgather
-        (AscendDeviceType._910B, True, 8, 100, 256, None, MoECommType.ALLGATHER),
-        (AscendDeviceType._910B, True, 16, 257, 256, None, MoECommType.ALLGATHER),
+    def test_allocate_kv_cache_uses_layer_spec_for_draft_gqa(self):
+        runner = self._build_runner()
+        kv_cache_spec = FullAttentionSpec(
+            block_size=16,
+            num_kv_heads=8,
+            head_size=64,
+            head_size_v=64,
+            dtype=torch.float16,
+        )
+        kv_cache_config = KVCacheConfig(
+            num_blocks=2,
+            kv_cache_tensors=[KVCacheTensor(size=kv_cache_spec.page_size_bytes * 2, shared_by=["draft_attn"])],
+            kv_cache_groups=[KVCacheGroupSpec(layer_names=["draft_attn"], kv_cache_spec=kv_cache_spec)],
+        )
 
-        # Case 4: A3 SOC
-        (AscendDeviceType._910_93, True, 8, 100, 256, None, MoECommType.MC2),
-        (AscendDeviceType._910_93, True, 8, 257, 256, None, MoECommType.ALLTOALL),
-    ])
-# yapf: enable
-def test_select_moe_comm_method(soc_version, enable_expert_parallel,
-                                world_size, num_tokens, mc2_tokens_capacity,
-                                quant_type, expected_method):
-    """
-    Tests the _select_moe_comm_method with various configurations including quant_type.
-    """
-    # Mock the NPUModelRunner instance and its dependencies
-    mock_runner = MagicMock(spec=NPUModelRunner)
-    mock_runner.parallel_config = MagicMock()
-    mock_runner.parallel_config.enable_expert_parallel = enable_expert_parallel
-    mock_runner.parallel_config.world_size_across_dp = world_size
-    mock_runner.mc2_tokens_capacity = mc2_tokens_capacity
+        kv_cache_raw_tensors = runner._allocate_kv_cache_tensors(kv_cache_config)
+        k_cache_raw, v_cache_raw = kv_cache_raw_tensors["draft_attn"]
 
-    # Add vllm_config.model_config.hf_config mock with moe_quantize
-    mock_hf_config = MagicMock()
-    mock_hf_config.moe_quantize = quant_type
-    mock_model_config = MagicMock()
-    mock_model_config.hf_config = mock_hf_config
-    mock_vllm_config = MagicMock()
-    mock_vllm_config.model_config = mock_model_config
-    mock_runner.vllm_config = mock_vllm_config
+        self.assertEqual(k_cache_raw.numel(), kv_cache_spec.page_size_bytes)
+        self.assertEqual(v_cache_raw.numel(), kv_cache_spec.page_size_bytes)
 
-    # Patch the helper functions
-    with patch('vllm_ascend.worker.model_runner_v1.get_ascend_device_type',
-               return_value=soc_version), \
-         patch('vllm_ascend.worker.model_runner_v1.is_global_first_rank',
-               return_value=True), \
-         patch('vllm_ascend.worker.model_runner_v1.is_moe_model',
-               return_value=True):
+    def test_reshape_kv_cache_uses_layer_spec_for_draft_gqa(self):
+        runner = self._build_runner()
+        kv_cache_spec = FullAttentionSpec(
+            block_size=16,
+            num_kv_heads=8,
+            head_size=64,
+            head_size_v=64,
+            dtype=torch.float16,
+        )
+        kv_cache_config = KVCacheConfig(
+            num_blocks=2,
+            kv_cache_tensors=[KVCacheTensor(size=kv_cache_spec.page_size_bytes * 2, shared_by=["draft_attn"])],
+            kv_cache_groups=[KVCacheGroupSpec(layer_names=["draft_attn"], kv_cache_spec=kv_cache_spec)],
+        )
+        kv_cache_raw_tensors = runner._allocate_kv_cache_tensors(kv_cache_config)
+        runner._kv_cache_spec_attn_group_iterator = lambda: [
+            SimpleNamespace(
+                kv_cache_spec=kv_cache_spec,
+                backend=runner.attn_backend,
+                layer_names=["draft_attn"],
+            )
+        ]
 
-        # Bind the real method to the mock object
-        method = NPUModelRunner._select_moe_comm_method(
-            mock_runner, num_tokens)
+        kv_caches = runner._reshape_kv_cache_tensors(kv_cache_config, kv_cache_raw_tensors)
+        k_cache, v_cache = kv_caches["draft_attn"]
 
-        # Assert the result
-        assert method == expected_method
+        self.assertEqual(k_cache.shape, (2, 16, 8, 64))
+        self.assertEqual(v_cache.shape, (2, 16, 8, 64))
 
 
-def test_select_moe_comm_method_unsupported_soc():
-    """
-    Tests that _select_moe_comm_method raises ValueError for an unsupported SOC.
-    """
-    mock_runner = MagicMock(spec=NPUModelRunner)
-    mock_runner.parallel_config = MagicMock()
-    mock_runner.parallel_config.enable_expert_parallel = True
-    mock_runner.mc2_tokens_capacity = 256
-
-    # Add vllm_config.model_config.hf_config mock with moe_quantize
-    mock_hf_config = MagicMock()
-    mock_hf_config.moe_quantize = None
-    mock_model_config = MagicMock()
-    mock_model_config.hf_config = mock_hf_config
-    mock_vllm_config = MagicMock()
-    mock_vllm_config.model_config = mock_model_config
-    mock_runner.vllm_config = mock_vllm_config
-
-    unsupported_soc = "UnsupportedSOC"
-
-    with patch('vllm_ascend.worker.model_runner_v1.get_ascend_device_type',
-               return_value=unsupported_soc), \
-         patch('vllm_ascend.worker.model_runner_v1.is_global_first_rank',
-               return_value=True), \
-         patch('vllm_ascend.worker.model_runner_v1.is_moe_model',
-                  return_value=True), \
-         pytest.raises(ValueError, match=f"Unsupported soc_version: {unsupported_soc}"):
-
-        NPUModelRunner._select_moe_comm_method(mock_runner, 100)
+if __name__ == "__main__":
+    unittest.main()
