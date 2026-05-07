@@ -1,0 +1,39 @@
+import torch
+from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
+
+def register_kv_sized_cpu_buffer(kv_caches: dict[str, torch.Tensor]):
+    """
+    申请一块和整个 KVCache 总大小相同的 pinned CPU buffer 并注册到 Mooncake。
+    """
+    # 1. 计算 KVCache 总大小（字节）
+    total_kv_bytes = 0
+    for layer_name, kv_cache_tuple in kv_caches.items():
+        tensors = kv_cache_tuple if isinstance(kv_cache_tuple, (list, tuple)) else [kv_cache_tuple]
+        for t in tensors:
+            total_kv_bytes += t.numel() * t.element_size()
+
+    print(f"KVCache 总大小: {total_kv_bytes / (1024**3):.2f} GB")
+
+    # 2. 申请同样大小的 pinned CPU buffer
+    cpu_buffer = torch.empty(
+        total_kv_bytes,
+        dtype=torch.uint8,
+        device="cpu",
+        pin_memory=True,          # RDMA 必须 pinned
+    )
+
+    # 3. 2MB 对齐（Mooncake 强制要求）
+    alignment = 2 * 1024 * 1024
+    ptr = cpu_buffer.data_ptr()
+    aligned_ptr = (ptr + alignment - 1) // alignment * alignment
+    offset = aligned_ptr - ptr
+    aligned_buffer = cpu_buffer[offset:]
+
+    # 4. 注册到 Mooncake（推荐使用 global_te）
+    global_te.register_buffer(
+        [aligned_buffer.data_ptr()],
+        [aligned_buffer.numel()]
+    )
+
+    print(f"成功注册等大小 CPU buffer: ptr=0x{aligned_buffer.data_ptr():x}, size={aligned_buffer.numel()} bytes")
+    return aligned_buffer
