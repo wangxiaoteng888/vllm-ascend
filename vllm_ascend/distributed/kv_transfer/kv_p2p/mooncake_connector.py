@@ -940,7 +940,7 @@ class MooncakeConnectorScheduler:
             * self.pcp_size
         )
         self.side_channel_host = get_ip()
-        self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
+        self.engine = global_te.get_transfer_engine1(self.side_channel_host, device_name=None)
         self.te_rpc_port = self.engine.get_rpc_port()
         # Requests that need to start recv.
         # New requests are added by update_state_after_alloc in
