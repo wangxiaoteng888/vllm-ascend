@@ -1,0 +1,162 @@
+(Worker_TP2_EP2 pid=45192) INFO 05-12 15:30:27 [mooncake_connector.py:242] Starting listening on path: tcp://90.90.97.27:36012
+(EngineCore pid=45051) INFO 05-12 15:30:30 [core.py:281] init engine (profile, create kv cache, warmup model) took 12.86 seconds
+(EngineCore pid=45051) INFO 05-12 15:30:31 [factory.py:64] Creating v1 connector with name: MooncakeConnector and engine_id: 0-5bc3eeb332974688988ac625f649c491
+(EngineCore pid=45051) INFO 05-12 15:30:31 [ascend_config.py:426] Dynamic EPLB is False
+(EngineCore pid=45051) INFO 05-12 15:30:31 [ascend_config.py:427] The number of redundant experts is 0
+(EngineCore pid=45051) INFO 05-12 15:30:31 [mooncake_connector.py:921] Initializing Mooncake Scheduler 0-5bc3eeb332974688988ac625f649c491
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W20260512 15:30:31.472795 45051 transfer_engine_py.cpp:77] Using default malloc/free for protocol: ascend
+I20260512 15:30:31.472877 45051 transfer_engine_impl.cpp:586] Metrics reporting is disabled (set MC_TE_METRIC=1 to enable)
+I20260512 15:30:31.472895 45051 transfer_engine_impl.cpp:105] Transfer Engine parseHostNameWithPort. server_name: 90.90.97.27 port: 12001
+I20260512 15:30:31.472936 45051 transfer_engine_impl.cpp:172] Transfer Engine RPC using P2P handshake, listening on 90.90.97.27:16482
+I20260512 15:30:31.473078 45051 ascend_direct_transport.cpp:94] install AscendDirectTransport for: 90.90.97.27:16482
+E20260512 15:30:31.477885 45051 ascend_direct_transport.cpp:555] Call aclrtGetDevice failed, ret: 107002
+E20260512 15:30:31.477913 45051 ascend_direct_transport.cpp:103] AscendDirectTransport: cannot allocate local segment, ret: 107002
+E20260512 15:30:31.477921 45051 transfer_engine_impl.cpp:199] Failed to install Ascend transport
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099] EngineCore failed to start.
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099] Traceback (most recent call last):
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1073, in run_engine_core
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     return func(*args, **kwargs)
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 839, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     super().__init__(
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 141, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     self.scheduler: SchedulerInterface = Scheduler(
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]                                          ^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/async_scheduler.py", line 14, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     super().__init__(*args, **kwargs)
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/scheduler.py", line 127, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     self.connector = KVConnectorFactory.create_connector(
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_connector/factory.py", line 82, in create_connector
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     return connector_cls(config, role, kv_cache_config)
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 821, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 943, in __init__
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py", line 28, in get_transfer_engine
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099]     raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+(EngineCore pid=45051) ERROR 05-12 15:30:31 [core.py:1099] RuntimeError: TransferEngine initialization failed with ret_value: -1
+(Worker_TP7_EP7 pid=45197) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP6_EP6 pid=45196) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP1_EP1 pid=45191) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP3_EP3 pid=45193) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP2_EP2 pid=45192) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP0_EP0 pid=45190) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP5_EP5 pid=45195) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+(Worker_TP4_EP4 pid=45194) WARNING 05-12 15:30:31 [multiproc_executor.py:866] WorkerProc was terminated
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+(EngineCore pid=45051) ERROR 05-12 15:30:38 [multiproc_executor.py:273] Worker proc VllmWorker-7 died unexpectedly, shutting down executor.
+(EngineCore pid=45051) Process EngineCore:
+(EngineCore pid=45051) Traceback (most recent call last):
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=45051)     self.run()
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/multiprocessing/process.py", line 108, in run
+(EngineCore pid=45051)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1103, in run_engine_core
+(EngineCore pid=45051)     raise e
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1073, in run_engine_core
+(EngineCore pid=45051)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=45051)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=45051)     return func(*args, **kwargs)
+(EngineCore pid=45051)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 839, in __init__
+(EngineCore pid=45051)     super().__init__(
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 141, in __init__
+(EngineCore pid=45051)     self.scheduler: SchedulerInterface = Scheduler(
+(EngineCore pid=45051)                                          ^^^^^^^^^^
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/async_scheduler.py", line 14, in __init__
+(EngineCore pid=45051)     super().__init__(*args, **kwargs)
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/scheduler.py", line 127, in __init__
+(EngineCore pid=45051)     self.connector = KVConnectorFactory.create_connector(
+(EngineCore pid=45051)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_connector/factory.py", line 82, in create_connector
+(EngineCore pid=45051)     return connector_cls(config, role, kv_cache_config)
+(EngineCore pid=45051)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 821, in __init__
+(EngineCore pid=45051)     self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
+(EngineCore pid=45051)                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 943, in __init__
+(EngineCore pid=45051)     self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
+(EngineCore pid=45051)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=45051)   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py", line 28, in get_transfer_engine
+(EngineCore pid=45051)     raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+(EngineCore pid=45051) RuntimeError: TransferEngine initialization failed with ret_value: -1
+(APIServer pid=44909) Traceback (most recent call last):
+(APIServer pid=44909)   File "/usr/local/python3.11.10/bin/vllm", line 8, in <module>
+(APIServer pid=44909)     sys.exit(main())
+(APIServer pid=44909)              ^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/cli/main.py", line 75, in main
+(APIServer pid=44909)     args.dispatch_function(args)
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/cli/serve.py", line 118, in cmd
+(APIServer pid=44909)     uvloop.run(run_server(args))
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/uvloop/__init__.py", line 92, in run
+(APIServer pid=44909)     return runner.run(wrapper())
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/asyncio/runners.py", line 118, in run
+(APIServer pid=44909)     return self._loop.run_until_complete(task)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=44909)     return await main
+(APIServer pid=44909)            ^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/api_server.py", line 656, in run_server
+(APIServer pid=44909)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/api_server.py", line 670, in run_server_worker
+(APIServer pid=44909)     async with build_async_engine_client(
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/contextlib.py", line 210, in __aenter__
+(APIServer pid=44909)     return await anext(self.gen)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/api_server.py", line 103, in build_async_engine_client
+(APIServer pid=44909)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/contextlib.py", line 210, in __aenter__
+(APIServer pid=44909)     return await anext(self.gen)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/entrypoints/openai/api_server.py", line 144, in build_async_engine_client_from_engine_args
+(APIServer pid=44909)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=44909)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/async_llm.py", line 225, in from_vllm_config
+(APIServer pid=44909)     return cls(
+(APIServer pid=44909)            ^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/async_llm.py", line 154, in __init__
+(APIServer pid=44909)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=44909)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=44909)     return func(*args, **kwargs)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core_client.py", line 128, in make_async_mp_client
+(APIServer pid=44909)     return AsyncMPClient(*client_args)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=44909)     return func(*args, **kwargs)
+(APIServer pid=44909)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core_client.py", line 924, in __init__
+(APIServer pid=44909)     super().__init__(
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core_client.py", line 583, in __init__
+(APIServer pid=44909)     with launch_core_engines(
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/contextlib.py", line 144, in __exit__
+(APIServer pid=44909)     next(self.gen)
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/utils.py", line 972, in launch_core_engines
+(APIServer pid=44909)     wait_for_engine_startup(
+(APIServer pid=44909)   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/utils.py", line 1031, in wait_for_engine_startup
+(APIServer pid=44909)     raise RuntimeError(
+(APIServer pid=44909) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+(APIServer pid=44909) [ERROR] 2026-05-12-15:30:41 (PID:44909, Device:-1, RankID:-1) ERR99999 UNKNOWN applicaiton exception
+(APIServer pid=44909) sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+root@k8s-node-27:/home/w00939320/poc/script# /usr/local/python3.11.10/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 8 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+^C
