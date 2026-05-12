@@ -1,0 +1,46 @@
+(Worker_TP2_EP2 pid=55243) INFO 05-12 16:19:28 [mooncake_connector.py:242] Starting listening on path: tcp://90.90.97.27:36012
+(EngineCore pid=55102) INFO 05-12 16:19:31 [core.py:281] init engine (profile, create kv cache, warmup model) took 13.02 seconds
+(EngineCore pid=55102) INFO 05-12 16:19:31 [factory.py:64] Creating v1 connector with name: MooncakeConnector and engine_id: 0-e1fca3a2192148cca38bd7b97dea1c22
+(EngineCore pid=55102) INFO 05-12 16:19:31 [ascend_config.py:426] Dynamic EPLB is False
+(EngineCore pid=55102) INFO 05-12 16:19:31 [ascend_config.py:427] The number of redundant experts is 0
+(EngineCore pid=55102) INFO 05-12 16:19:31 [mooncake_connector.py:921] Initializing Mooncake Scheduler 0-e1fca3a2192148cca38bd7b97dea1c22
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W20260512 16:19:31.710690 55102 transfer_engine_py.cpp:77] Using default malloc/free for protocol: P2PHANDSHAKE
+I20260512 16:19:31.710764 55102 transfer_engine_impl.cpp:586] Metrics reporting is disabled (set MC_TE_METRIC=1 to enable)
+I20260512 16:19:31.710781 55102 transfer_engine_impl.cpp:105] Transfer Engine parseHostNameWithPort. server_name: 90.90.97.27 port: 12001
+I20260512 16:19:31.710820 55102 transfer_engine_impl.cpp:172] Transfer Engine RPC using P2P handshake, listening on 90.90.97.27:16344
+I20260512 16:19:31.710973 55102 ascend_direct_transport.cpp:94] install AscendDirectTransport for: 90.90.97.27:16344
+E20260512 16:19:31.715648 55102 ascend_direct_transport.cpp:555] Call aclrtGetDevice failed, ret: 107002
+E20260512 16:19:31.715677 55102 ascend_direct_transport.cpp:103] AscendDirectTransport: cannot allocate local segment, ret: 107002
+E20260512 16:19:31.715682 55102 transfer_engine_impl.cpp:199] Failed to install Ascend transport
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099] EngineCore failed to start.
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099] Traceback (most recent call last):
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1073, in run_engine_core
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     return func(*args, **kwargs)
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 839, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     super().__init__(
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 141, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     self.scheduler: SchedulerInterface = Scheduler(
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]                                          ^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/async_scheduler.py", line 14, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     super().__init__(*args, **kwargs)
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/scheduler.py", line 127, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     self.connector = KVConnectorFactory.create_connector(
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_connector/factory.py", line 82, in create_connector
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     return connector_cls(config, role, kv_cache_config)
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 821, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/kv_p2p/mooncake_connector.py", line 943, in __init__
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     self.engine = global_te.get_transfer_engine1(self.side_channel_host, device_name=None)
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]   File "/home/w00939320/b1303/vllm-ascend/vllm_ascend/distributed/kv_transfer/utils/mooncake_transfer_engine.py", line 48, in get_transfer_engine1
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099]     raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+(EngineCore pid=55102) ERROR 05-12 16:19:31 [core.py:1099] RuntimeError: TransferEngine initialization failed with ret_value: -1
+(Worker_TP6_EP6 pid=55247) WARNING 05-12 16:19:31 [multiproc_executor.py:866] WorkerProc was terminated
