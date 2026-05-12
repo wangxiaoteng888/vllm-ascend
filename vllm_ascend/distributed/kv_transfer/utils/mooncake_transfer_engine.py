@@ -28,6 +28,26 @@ class GlobalTE:
                         raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
         return self.transfer_engine
 
+    def get_transfer_engine1(self, hostname: str, device_name: str | None):
+        if self.transfer_engine is None:
+            with self.transfer_engine_lock:
+                # Double-Checked Locking
+                if self.transfer_engine is None:
+                    try:
+                        from mooncake.engine import TransferEngine  # type: ignore
+                    except ImportError as e:
+                        raise ImportError(
+                            "Please install mooncake by following the instructions at "
+                            "https://github.com/kvcache-ai/Mooncake/blob/main/doc/en/build.md "  # noqa: E501
+                            "to run vLLM with MooncakeConnector."
+                        ) from e
+                    self.transfer_engine = TransferEngine()
+                    device_name = device_name if device_name is not None else ""
+                    ret_value = self.transfer_engine.initialize(hostname, "P2PHANDSHAKE", "P2PHANDSHAKE", device_name)
+                    if ret_value != 0:
+                        raise RuntimeError(f"TransferEngine initialization failed with ret_value: {ret_value}")
+        return self.transfer_engine
+
     def register_buffer(self, ptrs: list[int], sizes: list[int]):
         with self.register_buffer_lock:
             assert self.transfer_engine is not None, "Transfer engine must be initialized"
