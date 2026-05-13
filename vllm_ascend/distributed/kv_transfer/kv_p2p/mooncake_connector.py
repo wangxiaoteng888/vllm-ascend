@@ -269,6 +269,7 @@ class KVCacheSendingThread(threading.Thread):
                 msg = decoder.decode(payload[0])
                 if msg[0] == GET_META_MSG:
                     sock.send_multipart((identity, b"", encoded_data))
+                    logger.info(f"get meta_message")
                 elif msg[0] == DONE_RECVING_MSG:
                     logger.debug("Got DONE_RECVING_MSG for request %s", msg[1])
                     request_id = msg[1]
@@ -298,6 +299,142 @@ class KVCacheSendingThread(threading.Thread):
                     logger.error("Connection listener got unexpected message %s", msg)
             except Exception as e:
                 logger.error("Connection listener got exception %s: %s", type(e), e)
+
+class D2RHThread(threading.Thread):
+    def __init__(
+            self
+            ):
+        super().__init__(daemon=True, name="D2RHThread")
+        self.kv_caches_base_addr: dict[str, dict[int, list[int]]] = SizedDict()
+        self.remote_te_port: dict[str, dict[int, int]] = SizedDict()
+        self.request_queue: queue.Queue[Any] = queue.Queue()
+        self.remote_sockets_lock = threading.Lock()
+        self.remote_sockets: dict[  # type: ignore
+            str, deque[zmq.Socket]
+        ] = defaultdict(  # type: ignore
+            deque
+        )
+        self.timeout = 1.0
+        self.remote_poller = zmq.Poller()
+        self.encoder = msgspec.msgpack.Encoder()
+        self.decoder = msgspec.msgpack.Decoder(MooncakeAgentMetadata)
+    
+    def add_request(
+        self,
+        remote_host,
+        remote_port,
+        te_rpc_port,
+        session_id,
+        remote_engine_id
+    ):
+        self.request_queue.put(
+            {
+                "remote_host":remote_host,
+                "remote_port":remote_port,
+                "te_rpc_port":te_rpc_port,
+                "session_id":session_id,
+                "remote_engine_id":remote_engine_id
+            }
+        )
+
+    def run(self):
+        while True:
+            # try:
+            request_data = self.request_queue.get()
+            if request_data is None:
+                logger.warning("Received a None request!")
+                self.request_queue.task_done()
+                continue
+            self._handle_request(request_data)
+            # except Exception as e:
+            #     logger.error(f"Error in KVCacheTransferThread: {e}")
+    
+    def _handle_request(self, req_meta: dict[str, Any]):
+        remote_host = req_meta["remote_host"]
+        remote_port = req_meta["remote_port"]
+        te_rpc_port = req_meta["te_rpc_port"]
+        session_id = req_meta["session_id"]
+        remote_engine_id = req_meta["remote_engine_id"]
+        self._transfer_kv_cache(req_meta)
+
+    def _transfer_kv_cache(self, req_meta: dict[str, Any]):
+        remote_host = req_meta["remote_host"]
+        remote_handshake_port = req_meta["remote_port"]
+        te_rpc_port = req_meta["te_rpc_port"]
+        session_id = req_meta["session_id"]
+        remote_engine_id = req_meta["remote_engine_id"]
+
+        if (
+            remote_engine_id not in self.kv_caches_base_addr
+            or remote_handshake_port not in self.kv_caches_base_addr[remote_engine_id]
+        ):
+            self._get_remote_metadata(remote_host, remote_handshake_port)
+        for k, (src_layer_base_addr, dst_layer_base_addr) in enumerate(
+            zip(local_kv_caches_base_addrs, remote_kv_caches_base_addrs)
+        ):
+            block_len = self.block_len[k % block_length]
+            inner_block_len = block_len // tp_num_need_pulls
+            for remote_block_id, local_block_id in zip(grouped_remote_block_ids, grouped_local_block_ids):
+                src = src_layer_base_addr + local_block_id[0] * block_len + inner_offset * inner_block_len
+                dst = dst_layer_base_addr + remote_block_id[0] * inner_block_len
+                length = inner_block_len * len(local_block_id)
+                src_list.append(src)
+                dst_list.append(dst)
+                length_list.append(length)
+        ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
+
+    def _get_remote_metadata(self, remote_host: str, remote_handshake_port: int) -> None:
+        """Get the metadata from the remote host."""
+        sock: zmq.Socket | None = None  # type: ignore
+        try:
+            sock = self._get_remote_socket(remote_host, remote_handshake_port)
+            ensure_zmq_send(sock, self.encoder.encode((GET_META_MSG, "")), f"{remote_host}:{remote_handshake_port}")
+            metadata_bytes = ensure_zmq_recv(sock, self.remote_poller, f"{remote_host}:{remote_handshake_port}")
+            agent_meta = self.decoder.decode(metadata_bytes)
+            engine_id = agent_meta.engine_id
+            # assert engine_id != self.local_engine_id, (
+            #     f"Conflict engine id {engine_id} with local engine id {self.local_engine_id}."
+            # )
+            self.kv_caches_base_addr[engine_id][remote_handshake_port] = agent_meta.kv_caches_base_addr
+            self.remote_te_port[engine_id][remote_handshake_port] = agent_meta.te_rpc_port
+            logger.info(f"[===] base_add te_rpc_port {agent_meta.kv_caches_base_addr} {agent_meta.te_rpc_port}")
+            logger.info(f"[===] _get_remote_metadata {self.kv_caches_base_addr} {self.remote_te_port}")
+        finally:
+            if sock is not None:
+                self._return_remote_socket(sock, remote_host, remote_handshake_port)
+                logger.debug("Returned socket to pool for %s:%d", remote_host, remote_handshake_port)
+
+    def _get_remote_socket(self, remote_host: str, remote_handshake_port: int) -> zmq.Socket:  # type: ignore
+        """Get a socket to the remote host."""
+        remote_path = make_zmq_path("tcp", remote_host, remote_handshake_port)
+        with self.remote_sockets_lock:
+            if self.remote_sockets[remote_path]:
+                return self.remote_sockets[remote_path].popleft()
+
+            ctx = zmq.Context()  # type: ignore
+            sock = make_zmq_socket(
+                ctx=ctx,
+                path=remote_path,
+                socket_type=zmq.REQ,  # type: ignore
+                bind=False,
+            )
+            sock.setsockopt(
+                zmq.SNDTIMEO,  # type: ignore
+                int(self.timeout * 1000),
+            )
+            self.remote_poller.register(sock, zmq.POLLIN)  # type: ignore
+            return sock
+
+    def _return_remote_socket(
+        self,
+        sock: zmq.Socket,  # type: ignore
+        remote_host: str,
+        remote_handshake_port: int,
+    ) -> None:
+        """Return the remote socket to the pool."""
+        remote_path = make_zmq_path("tcp", remote_host, remote_handshake_port)
+        with self.remote_sockets_lock:
+            self.remote_sockets[remote_path].append(sock)
 
 
 class KVCacheRecvingThread(threading.Thread):
@@ -521,7 +658,7 @@ class KVCacheRecvingThread(threading.Thread):
                 end_layer_index = end_layer_index + 1
         num_cache_per_layer = len(list(self.kv_caches.values())[0])  # Number of KV caches per layer
         first_cache_tensor = list(self.kv_caches.values())[0]
-        logger.info(f"[===]{first_cache_tensor.shape=}")
+        logger.info(f"[===]{first_cache_tensor[0].shape=}")
         local_kv_caches_base_addrs = self.kv_caches_base_addr[self.local_engine_id][self.local_handshake_port][
             first_layer_index * num_cache_per_layer : end_layer_index * num_cache_per_layer
         ]
@@ -940,8 +1077,11 @@ class MooncakeConnectorScheduler:
             * self.pcp_size
         )
         self.side_channel_host = get_ip()
-        self.engine = global_te.get_transfer_engine1(self.side_channel_host, device_name=None)
+        torch.npu.set_device(0)
+        self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
         self.te_rpc_port = self.engine.get_rpc_port()
+        self.d2rh_thread = D2RHThread()
+        self.d2rh_thread.start()
         # Requests that need to start recv.
         # New requests are added by update_state_after_alloc in
         # the scheduler. Used to make metadata passed to Worker.
@@ -977,12 +1117,25 @@ class MooncakeConnectorScheduler:
         )
 
         if params is not None and params.get("do_remote_prefill"):
-            # remote_host = params.remote_host
-            # te_rpc_port = params.te_rpc_port
-            # session_id = f"{remote_host}:{te_rpc_port}"
-            # remote_block_ids = params.remote_block_ids
-            # local_block_ids = params.remote_block_ids
-            # grouped_remote_block_ids, grouped_local_block_ids = remote_block_ids, local_block_ids
+            logger.info(f"{params=}")
+            remote_host = params['remote_host']
+            te_rpc_port = params['te_rpc_port']
+            remote_port = params['remote_port']
+            remote_engine_id = params['remote_engine_id']
+            session_id = f"{remote_host}:{te_rpc_port}"
+            remote_block_ids = params['remote_block_ids']
+            local_block_ids = params['remote_block_ids']
+            # kv_caches_base_addr = params['kv_caches_base_addr']
+            grouped_remote_block_ids, grouped_local_block_ids = remote_block_ids, local_block_ids
+            self.d2rh_thread.add_request(
+                                remote_host = remote_host,
+                                remote_port = remote_port,
+                                te_rpc_port = te_rpc_port,
+                                session_id = session_id,
+                                remote_engine_id = remote_engine_id
+            )
+            logger.info(f"[===] {grouped_remote_block_ids=} {grouped_local_block_ids=}{session_id=}")
+
             # scr.append(self.cpu_ptr)
             # dst.append()
             # length = inner_block_len * len(local_block_id)
@@ -1108,7 +1261,9 @@ class MooncakeConnectorScheduler:
             last_token_id=request.output_token_ids[-1],
             remote_multi_nodes_meta_mapping=self.multi_nodes_meta_mapping,
             num_prompt_blocks=num_prompt_blocks,
+            te_rpc_port = self.te_rpc_port,
         )
+            # remote_handshake_port
 
     def set_xfer_handshake_metadata(self, metadata: dict[int, KVConnectorHandshakeMetadata]) -> None:
         """
@@ -1600,6 +1755,7 @@ class MooncakeConnectorWorker:
             else:  # TODO: support prefill context parallel and pipeline parallel open at the same time
                 chosen_rank_list = self._get_remote_rank(remote_req_id, prefill_tp_size)
                 remote_handshake_port_list = [[x + meta.remote_port] for x in chosen_rank_list]
+                logger.info(f"[===]{meta.remote_port=}{remote_handshake_port_list=}")
                 for i in range(tp_num_need_pulls * self._prefill_pp_size):
                     assert self.kv_recv_thread is not None
                     remote_host, remote_engine_id = self._get_remote_host_info_by_port(
@@ -1621,6 +1777,7 @@ class MooncakeConnectorWorker:
                         tp_num_need_pulls=tp_num_need_pulls,
                         all_task_done=(i == tp_num_need_pulls * self._prefill_pp_size - 1),
                     )
+                    logger.info(f"[===]{remote_handshake_port_list[i][0]=}")
 
         for req_id in metadata.reqs_in_batch:
             if self.kv_send_thread is not None:
