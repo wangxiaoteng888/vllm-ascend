@@ -76,7 +76,6 @@ class MooncakeAgentMetadata(msgspec.Struct, omit_defaults=True, dict=True):
     kv_caches_base_addr: list[int]
     num_blocks: int
     local_ip: str = ""
-    total_kv_bytes: int = 0
 
 
 @dataclass
@@ -304,7 +303,8 @@ class KVCacheSendingThread(threading.Thread):
 class D2RHThread(threading.Thread):
     def __init__(
             self,
-            cpu_ptrs: list[int] | None = None
+            ptrs,
+            engine
             ):
         super().__init__(daemon=True, name="D2RHThread")
         self.kv_caches_base_addr: dict[str, dict[int, list[int]]] = SizedDict()
@@ -320,34 +320,24 @@ class D2RHThread(threading.Thread):
         self.remote_poller = zmq.Poller()
         self.encoder = msgspec.msgpack.Encoder()
         self.decoder = msgspec.msgpack.Decoder(MooncakeAgentMetadata)
-        self.cpu_ptrs = cpu_ptrs or []  # list of per-tensor (K/V per layer) start pointers in CPU buffer
-        self.cpu_ptr = self.cpu_ptrs[0] if self.cpu_ptrs else None
+        self.ptrs = ptrs
+        self.engine = engine
     
     def add_request(
         self,
         remote_host,
         remote_port,
-        te_rpc_port,
-        session_id,
         remote_engine_id,
-        remote_block_ids: list | None = None,
-        local_block_ids: list | None = None,
-        inner_offset: int = 0,
-        block_len: list[int] | None = None,
-        tp_num_need_pulls: int = 1,
+        grouped_remote_block_ids,
+        grouped_local_block_ids
     ):
         self.request_queue.put(
             {
-                "remote_host": remote_host,
-                "remote_port": remote_port,
-                "te_rpc_port": te_rpc_port,
-                "session_id": session_id,
-                "remote_engine_id": remote_engine_id,
-                "remote_block_ids": remote_block_ids or [],
-                "local_block_ids": local_block_ids or [],
-                "inner_offset": inner_offset,
-                "block_len": block_len or [],
-                "tp_num_need_pulls": tp_num_need_pulls,
+                "remote_host":remote_host,
+                "remote_port":remote_port,
+                "remote_engine_id":remote_engine_id,
+                "grouped_remote_block_ids":grouped_remote_block_ids,
+                "grouped_local_block_ids":grouped_local_block_ids
             }
         )
 
@@ -366,63 +356,39 @@ class D2RHThread(threading.Thread):
     def _handle_request(self, req_meta: dict[str, Any]):
         remote_host = req_meta["remote_host"]
         remote_port = req_meta["remote_port"]
-        te_rpc_port = req_meta["te_rpc_port"]
-        session_id = req_meta["session_id"]
         remote_engine_id = req_meta["remote_engine_id"]
         self._transfer_kv_cache(req_meta)
 
     def _transfer_kv_cache(self, req_meta: dict[str, Any]):
         remote_host = req_meta["remote_host"]
         remote_handshake_port = req_meta["remote_port"]
-        te_rpc_port = req_meta["te_rpc_port"]
-        session_id = req_meta["session_id"]
         remote_engine_id = req_meta["remote_engine_id"]
-
-        remote_block_ids = req_meta.get("remote_block_ids", [])
-        local_block_ids = req_meta.get("local_block_ids", [])
-        inner_offset = req_meta.get("inner_offset", 0)
-        block_len_list = req_meta.get("block_len", [])
-        tp_num_need_pulls = req_meta.get("tp_num_need_pulls", 1)
+        grouped_remote_block_ids = [req_meta["grouped_remote_block_ids"]]
+        grouped_local_block_ids = [req_meta["grouped_local_block_ids"]]
+        
 
         if (
             remote_engine_id not in self.kv_caches_base_addr
             or remote_handshake_port not in self.kv_caches_base_addr[remote_engine_id]
         ):
             self._get_remote_metadata(remote_host, remote_handshake_port)
-
-        # Pull remote P's KVCache into local D's CPU pinned buffer (self.cpu_ptrs)
         remote_kv_caches_base_addrs = self.kv_caches_base_addr[remote_engine_id][remote_handshake_port]
-        # For dst we use CPU buffer instead of NPU local_kv_caches_base_addrs
-        # cpu_ptrs[0] is the base of the first tensor (layer 0 K); offsets are still linear for simplicity
-        cpu_base = self.cpu_ptrs[0] if self.cpu_ptrs else 0
+        te_rpc_port = self.remote_te_port[remote_engine_id][remote_handshake_port]
+        session_id = f"{remote_host}:{te_rpc_port}"
+        inner_block_len = 262144
+        block_len = 262144
         src_list, dst_list, length_list = [], [], []
-
-        # Simplified: treat remote_block_ids as src blocks, compute dst offset in CPU buffer linearly
-        # In practice, use the same grouping and layer base addrs as KVCacheRecvingThread
-        # Here we demonstrate pulling to CPU buffer
-        block_length = len(block_len_list) if block_len_list else 1
-        for remote_block_id, local_block_id in zip(remote_block_ids, local_block_ids):
-            # src: remote layer base + block offset (use first layer base for demo; extend for multi-layer)
-            if remote_kv_caches_base_addrs:
-                src = remote_kv_caches_base_addrs[0] + remote_block_id[0] * (block_len_list[0] if block_len_list else 0)
-            else:
-                src = 0
-            # dst: CPU buffer base + local block offset (linear in CPU mem)
-            dst = cpu_base + local_block_id[0] * (block_len_list[0] if block_len_list else 0)
-            length = (block_len_list[0] if block_len_list else 0) * len(local_block_id)
-            src_list.append(src)
-            dst_list.append(dst)
-            length_list.append(length)
-
-        if src_list and self.cpu_ptrs:
-            logger.info(f"[D2RH] pulling remote KV to CPU buffer: {len(src_list)} transfers, cpu_ptr=0x{cpu_base:x}")
-            ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
-            if ret < 0:
-                logger.error("Mooncake D2RH transfer failed, ret=%s", ret)
-            else:
-                logger.info(f"[D2RH] transfer to CPU buffer done, ret={ret}")
-        else:
-            logger.warning("D2RH skip transfer: no blocks or cpu_ptrs not set")
+        logger.info(f"[===] real base addr is {remote_kv_caches_base_addrs=}")
+        for src_layer_base_addr in remote_kv_caches_base_addrs:
+            for remote_block_id, local_block_id in zip(grouped_remote_block_ids, grouped_local_block_ids):
+                src = src_layer_base_addr + local_block_id[0] * block_len
+                length = inner_block_len * len(local_block_id)
+                src_list.append(src)
+                length_list.append(length)
+        logger.info(f"[===] all_dist {self.ptrs=}{dst_list=}")
+        ret = self.engine.batch_transfer_sync_read(session_id, src_list, self.ptrs, length_list)
+        if ret < 0:
+            logger.error(f"trans_failed{session_id}")
 
     def _get_remote_metadata(self, remote_host: str, remote_handshake_port: int) -> None:
         """Get the metadata from the remote host."""
@@ -689,6 +655,7 @@ class KVCacheRecvingThread(threading.Thread):
         global_offset = offset  # Global offset of request across all ranks
         prefill_pp_rank = offset // tp_num_need_pulls  # PP rank where current request resides
         inner_offset = offset % tp_num_need_pulls  # Offset within each PP stage
+        logger.info(f"[===] import thing {inner_offset=}")
 
         remote_kv_caches_base_addrs = self.kv_caches_base_addr[remote_engine_id][remote_handshake_port]
         first_layer_index, end_layer_index = self.pp_layer_indices[prefill_pp_rank]
@@ -698,8 +665,6 @@ class KVCacheRecvingThread(threading.Thread):
             if prefill_pp_rank == self._prefill_pp_size - 1:
                 end_layer_index = end_layer_index + 1
         num_cache_per_layer = len(list(self.kv_caches.values())[0])  # Number of KV caches per layer
-        first_cache_tensor = list(self.kv_caches.values())[0]
-        logger.info(f"[===]{first_cache_tensor[0].shape=}")
         local_kv_caches_base_addrs = self.kv_caches_base_addr[self.local_engine_id][self.local_handshake_port][
             first_layer_index * num_cache_per_layer : end_layer_index * num_cache_per_layer
         ]
@@ -723,11 +688,12 @@ class KVCacheRecvingThread(threading.Thread):
                 src_list.append(src)
                 dst_list.append(dst)
                 length_list.append(length)
+                logger.info(f"need block_len{block_len=}")
         logger.info(f"[===] {session_id=}{src_list=}{dst_list=}{length_list=}")
-        ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
-        if ret < 0:
-            logger.error("Mooncake transfer failed for request %s", req_meta["remote_request_id"])
-            raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
+        # ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
+        # if ret < 0:
+        #     logger.error("Mooncake transfer failed for request %s", req_meta["remote_request_id"])
+        #     raise RuntimeError(f"Mooncake transfer failed, ret: {ret}")
 
         req_end_time = time.perf_counter()
         req_transfer_elapsed = (req_end_time - req_start_time) * 1000
@@ -1117,14 +1083,6 @@ class MooncakeConnectorScheduler:
             * vllm_config.parallel_config.pipeline_parallel_size
             * self.pcp_size
         )
-        self.side_channel_host = get_ip()
-        torch.npu.set_device(0)
-        self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
-        self.te_rpc_port = self.engine.get_rpc_port()
-        self.cpu_ptrs: list[int] = register_kv_sized_cpu_buffer(vllm_config=vllm_config)
-        self.cpu_ptr = self.cpu_ptrs[0] if self.cpu_ptrs else 0
-        self.d2rh_thread = D2RHThread(cpu_ptrs=self.cpu_ptrs)
-        self.d2rh_thread.start()
         # Requests that need to start recv.
         # New requests are added by update_state_after_alloc in
         # the scheduler. Used to make metadata passed to Worker.
@@ -1134,10 +1092,17 @@ class MooncakeConnectorScheduler:
 
         # master-slave meta information for cross-nodes
         self.multi_nodes_meta_mapping: dict[str, dict[str, Any]] = {}
-        self.cpu_buffer = None
-        self.cpu_ptr = register_kv_sized_cpu_buffer(vllm_config=vllm_config)
-        # TODO: store buffer ref from register func to keep pinned memory alive
+        self.kv_role = vllm_config.kv_transfer_config.kv_role
+        if self.kv_role == "kv_consumer":
+            self.side_channel_host = get_ip()
+            torch.npu.set_device(0)
+            self.engine = global_te.get_transfer_engine(self.side_channel_host, device_name=None)
+            self.te_rpc_port = self.engine.get_rpc_port()
+            self.cpu_ptr = register_kv_sized_cpu_buffer(vllm_config)
 
+            self.d2rh_thread = D2RHThread(self.cpu_ptr, engine =self.engine)
+            self.d2rh_thread.start()
+        
     def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int, bool]:
         """
         For remote prefill, pull all prompt blocks from remote
@@ -1164,26 +1129,19 @@ class MooncakeConnectorScheduler:
         if params is not None and params.get("do_remote_prefill"):
             logger.info(f"{params=}")
             remote_host = params['remote_host']
-            te_rpc_port = params['te_rpc_port']
             remote_port = params['remote_port']
             remote_engine_id = params['remote_engine_id']
-            session_id = f"{remote_host}:{te_rpc_port}"
             remote_block_ids = params['remote_block_ids']
             local_block_ids = params['remote_block_ids']
             # kv_caches_base_addr = params['kv_caches_base_addr']
             grouped_remote_block_ids, grouped_local_block_ids = remote_block_ids, local_block_ids
             self.d2rh_thread.add_request(
-                remote_host=remote_host,
-                remote_port=remote_port,
-                te_rpc_port=te_rpc_port,
-                session_id=session_id,
-                remote_engine_id=remote_engine_id,
-                remote_block_ids=grouped_remote_block_ids,
-                local_block_ids=grouped_local_block_ids,
-                # inner_offset / block_len / tp_num_need_pulls should be passed from scheduler context when available
+                                remote_host = remote_host,
+                                remote_port = remote_port,
+                                remote_engine_id = remote_engine_id,
+                                grouped_remote_block_ids = grouped_remote_block_ids,
+                                grouped_local_block_ids = grouped_local_block_ids
             )
-            logger.info(f"[===] {grouped_remote_block_ids=} {grouped_local_block_ids=}{session_id=}")
-
             # scr.append(self.cpu_ptr)
             # dst.append()
             # length = inner_block_len * len(local_block_id)
@@ -1309,7 +1267,6 @@ class MooncakeConnectorScheduler:
             last_token_id=request.output_token_ids[-1],
             remote_multi_nodes_meta_mapping=self.multi_nodes_meta_mapping,
             num_prompt_blocks=num_prompt_blocks,
-            te_rpc_port = self.te_rpc_port,
         )
             # remote_handshake_port
 
@@ -1325,15 +1282,6 @@ class MooncakeConnectorScheduler:
                 "host": rank_metadata.local_ip,
                 "engine_id": rank_metadata.engine_id,
             }
-            # Register CPU buffer matching remote KVCache size (if provided in handshake)
-            if getattr(rank_metadata, "total_kv_bytes", 0) > 0:
-                new_cpu_ptrs = register_kv_sized_cpu_buffer(total_kv_bytes=rank_metadata.total_kv_bytes)
-                self.cpu_ptrs = new_cpu_ptrs
-                self.cpu_ptr = new_cpu_ptrs[0] if new_cpu_ptrs else 0
-                if self.d2rh_thread is not None:
-                    self.d2rh_thread.cpu_ptrs = new_cpu_ptrs
-                    self.d2rh_thread.cpu_ptr = self.cpu_ptr
-                logger.info("Updated scheduler CPU buffer to match KV size: 0x%x (%d bytes)", self.cpu_ptr, rank_metadata.total_kv_bytes)
 
 
 class MooncakeConnectorWorker:
@@ -1479,15 +1427,14 @@ class MooncakeConnectorWorker:
                 lengths.append(region_len)
         global_te.register_buffer(ptrs, lengths)
         # After KV Caches registered, start the sending or receiving thread.
-        total_kv_bytes = _compute_total_kv_bytes(self.kv_caches)
         metadata = MooncakeAgentMetadata(
             engine_id=self.engine_id,
             te_rpc_port=self.te_rpc_port,
             kv_caches_base_addr=kv_caches_base_addr,
             num_blocks=self.num_blocks,
             local_ip=get_ip(),
-            total_kv_bytes=total_kv_bytes,
         )
+        logger.info(f"[===] P side {kv_caches_base_addr}")
         self.xfer_handshake_metadata = metadata
 
         ready_event = threading.Event()
@@ -2070,17 +2017,6 @@ def get_prefill_pp_indices(
         end_layer = start_layer + partitions[pp_rank]
         return (start_layer, end_layer)
 
-
-def _compute_total_kv_bytes(kv_caches: dict[str, torch.Tensor]) -> int:
-    """Compute total bytes needed for all KV caches (handles list/tuple per layer)."""
-    total_kv_bytes = 0
-    for cache_or_caches in kv_caches.values():
-        tensors = cache_or_caches if isinstance(cache_or_caches, (list, tuple)) else [cache_or_caches]
-        for t in tensors:
-            total_kv_bytes += t.numel() * t.element_size()
-    return total_kv_bytes
-
-
 def _estimate_total_kv_bytes_from_config(vllm_config: "VllmConfig") -> int:
     """基于 vllm_config 粗略估算 KVCache 大小（用于 scheduler 侧提前注册）。"""
     try:
@@ -2098,16 +2034,14 @@ def _estimate_total_kv_bytes_from_config(vllm_config: "VllmConfig") -> int:
         total = num_layers * 2 * num_blocks * block_size * n_kv_heads * head_dim * bytes_per_elem
         print(f"[Estimate] KVCache 估算大小: {total / (1024**3):.2f} GB "
               f"(layers={num_layers}, kv_heads={n_kv_heads}, block_size={block_size}, blocks={num_blocks})")
-        return total
+        return total , num_layers * 2
     except Exception as e:
         logger.warning("Failed to estimate KVCache size from config: %s, fallback to 4GB", e)
-        return 4 * 1024 * 1024 * 1024
+        return 4 * 1024 * 1024 * 1024 , num_layers * 2
 
 
 def register_kv_sized_cpu_buffer(
-    kv_caches: dict[str, torch.Tensor] | None = None,
-    total_kv_bytes: int | None = None,
-    vllm_config: "VllmConfig" | None = None,
+    vllm_config = None
 ) -> list[int]:
     """
     申请一块连续的 pinned CPU buffer，并返回 KVCache 中每个 tensor 的起始指针列表
@@ -2118,14 +2052,11 @@ def register_kv_sized_cpu_buffer(
     if '_cpu_buffers' not in globals():
         _cpu_buffers = []
 
-    if total_kv_bytes is None:
-        if kv_caches:
-            total_kv_bytes = _compute_total_kv_bytes(kv_caches)
-            print(f"KVCache 总大小: {total_kv_bytes / (1024**3):.2f} GB")
-        elif vllm_config is not None:
-            total_kv_bytes = _estimate_total_kv_bytes_from_config(vllm_config)
-        else:
-            total_kv_bytes = 4096 * 1024 * 1024
+
+    if vllm_config is not None:
+        total_kv_bytes , num_tensors = _estimate_total_kv_bytes_from_config(vllm_config)
+    else:
+        total_kv_bytes = 4096 * 1024 * 1024
 
     # 2. 申请同样大小的 pinned CPU buffer（连续）
     cpu_buffer = torch.empty(
@@ -2144,27 +2075,21 @@ def register_kv_sized_cpu_buffer(
 
     # 4. 计算每个 tensor 的起始指针（K/V per layer）
     ptrs: list[int] = []
-    if kv_caches:
-        # 精确模式：按实际 tensor 大小累积偏移
-        current = aligned_base
-        for cache_or_caches in kv_caches.values():
-            tensors = cache_or_caches if isinstance(cache_or_caches, (list, tuple)) else [cache_or_caches]
-            for t in tensors:
-                ptrs.append(current)
-                current += t.numel() * t.element_size()
-    else:
-        # 估算模式：平均分配（假设 48 层 * 2 = 96 个 tensor）
-        num_tensors = 96  # 常见 48 层模型的 K+V 数量
-        per_tensor = total_kv_bytes // num_tensors
-        for i in range(num_tensors):
-            ptrs.append(aligned_base + i * per_tensor)
+
+    # 估算模式：平均分配（假设 48 层 * 2 = 96 个 tensor）
+    per_tensor = total_kv_bytes // num_tensors
+    for i in range(num_tensors):
+        ptrs.append(aligned_base + i * per_tensor)
 
     # 5. 注册到 Mooncake（注册整个连续 buffer）
     global_te.register_buffer(
         [aligned_buffer.data_ptr()],
         [aligned_buffer.numel()]
     )
+    print(f"DEBUG: cpu_buffer.data_ptr() = {cpu_buffer.data_ptr()}")
+    print(f"DEBUG: aligned_base = {aligned_base}")
 
     _cpu_buffers.append(cpu_buffer)  # keep ref
     print(f"成功注册等大小 CPU buffer: base=0x{aligned_buffer.data_ptr():x}, size={aligned_buffer.numel()} bytes, 返回 {len(ptrs)} 个 tensor ptr")
     return ptrs
+
