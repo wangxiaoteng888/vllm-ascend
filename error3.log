@@ -1,0 +1,14 @@
+[ERROR] HCCL(45214,):2026-05-14-17:45:36.072.780 [hccl_one_sided_conn.cc:325] [46185][GetTransInfo] Can't find remoteBuffer by key[0x12c1c0000000][262144]
+[ERROR] HCCL(45214,):2026-05-14-17:45:36.072.789 [hccl_one_sided_service.cc:1143] [46185][InitAicpuTilingDataBuf]call trace: hcclRet -> 1
+[ERROR] HCCL(45214,):2026-05-14-17:45:36.072.792 [hccl_one_sided_service.cc:973] [46185][OrchestrateAicpu]call trace: hcclRet -> 1
+[ERROR] HCCL(45214,):2026-05-14-17:45:36.072.863 [exception_handler.cc:23] [46185]HcclBatchGet: HcclException, what: hccl_one_sided_service.cc:519,BatchGet, Error: hccl special error, ret=1 [BatchGet] AICPU launch failed, code: 1
+[ERROR] GE(45214,):2026-05-14-17:45:36.072.930 [channel.cc:263]46185 operator(): ErrorNo: 103900() [GE][MODULE]Failed to invoke HcclBatchGet, hccl_result= 1
+[ERROR] GE(45214,):2026-05-14-17:45:36.072.933 [channel.cc:422]46185 Flush: ErrorNo: 103900() [GE][MODULE]Failed to batch transfer.
+[ERROR] GE(45214,):2026-05-14-17:45:36.072.936 [channel.cc:414]46185 Put: ErrorNo: 103900() [GE][MODULE]Failed to batch transfer.
+[ERROR] GE(45214,):2026-05-14-17:45:36.072.938 [channel.cc:267]46185 TransferAsync: ErrorNo: 103900() [GE][MODULE]Failed to batch transfer
+[ERROR] GE(45214,):2026-05-14-17:45:36.072.940 [channel.cc:315]46185 TransferSync: ErrorNo: 103900() [GE][MODULE]Transfer failed.
+[ERROR] GE(45214,):2026-05-14-17:45:36.092.532 [adxl_inner_engine.cc:339]46185 TransferSync: ErrorNo: 103900() [GE][MODULE]Failed to transfer sync, remote_engine:90.90.97.27:20002
+[ERROR] GE(45214,):2026-05-14-17:45:36.092.539 [adxl_engine_impl.cc:111]46185 TransferSync: ErrorNo: 103900() [GE][MODULE]Failed to transfer sync.
+[ERROR] GE(45214,):2026-05-14-17:45:36.092.542 [adxl_engine_impl.cc:234]46185 TransferSync: ErrorNo: 103900() [GE][MODULE]Failed to TransferSync, remote_engine:90.90.97.27:20002, operation:0, op_descs size:72, timeout:10000 ms
+~
+~
