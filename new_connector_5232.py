@@ -473,20 +473,22 @@ class D2RHThread(threading.Thread):
     def add_request(
         self,
         request_id,
+        remote_request_id,
         remote_host,
         remote_port,
         remote_engine_id,
         grouped_remote_block_ids,
-        grouped_local_block_ids
+        grouped_local_block_ids,
     ):
         self.request_queue.put(
             {
-                "request_id":request_id,
-                "remote_host":remote_host,
-                "remote_port":remote_port,
-                "remote_engine_id":remote_engine_id,
-                "grouped_remote_block_ids":grouped_remote_block_ids,
-                "grouped_local_block_ids":grouped_local_block_ids
+                "request_id": request_id,
+                "remote_request_id": remote_request_id,
+                "remote_host": remote_host,
+                "remote_port": remote_port,
+                "remote_engine_id": remote_engine_id,
+                "grouped_remote_block_ids": grouped_remote_block_ids,
+                "grouped_local_block_ids": grouped_local_block_ids,
             }
         )
 
@@ -590,6 +592,7 @@ class D2RHThread(threading.Thread):
                     remote_port = params['remote_port']
                     remote_engine_id = params['remote_engine_id']
                     remote_block_ids = params['remote_block_ids']
+                    remote_request_id = params.get('remote_request_id', request_id)
                     cpu_block_ids = self.cpu_kvcache_manager.alloc_blocks(len(remote_block_ids))
                     global BLOCK_DICT
                     if cpu_block_ids is not None:
@@ -601,12 +604,14 @@ class D2RHThread(threading.Thread):
                     )
                     if cpu_block_ids is not None:
                         self.add_request(
-                                    request_id = request_id,
-                                    remote_host = remote_host,
-                                    remote_port = remote_port,
-                                    remote_engine_id = remote_engine_id,
-                                    grouped_remote_block_ids = remote_block_ids,
-                                    grouped_local_block_ids = cpu_block_ids)
+                            request_id=request_id,
+                            remote_request_id=remote_request_id,
+                            remote_host=remote_host,
+                            remote_port=remote_port,
+                            remote_engine_id=remote_engine_id,
+                            grouped_remote_block_ids=remote_block_ids,
+                            grouped_local_block_ids=cpu_block_ids,
+                        )
                         pull_ack = b"ACK"
                     else:
                         logger.warning(
@@ -636,7 +641,8 @@ class D2RHThread(threading.Thread):
         self._transfer_kv_cache(req_meta)
 
     def _transfer_kv_cache(self, req_meta: dict[str, Any]):
-        request_id =  req_meta["request_id"]
+        request_id = req_meta["request_id"]
+        remote_request_id = req_meta.get("remote_request_id", request_id)
         remote_host = req_meta["remote_host"]
         remote_handshake_port = req_meta["remote_port"]
         remote_engine_id = req_meta["remote_engine_id"]
@@ -685,9 +691,54 @@ class D2RHThread(threading.Thread):
         )
         ret = self.engine.batch_transfer_sync_read(session_id, local_list, peer_list, length_list)
 
-        self.send_pull_done(request_id)
         if ret < 0:
-            logger.error(f"trans_failed{session_id}")
+            logger.error("D2RH transfer failed for request %s, session %s", remote_request_id, session_id)
+        else:
+            self._send_done_recv_signal(remote_request_id, remote_host, remote_handshake_port)
+        self.send_pull_done(request_id)
+
+    def _send_done_recv_signal(
+        self,
+        request_id: str,
+        remote_host: str,
+        remote_handshake_port: int,
+    ) -> None:
+        """Tell prefill that KV has been pulled into CPU staging."""
+        logger.debug(
+            "D2RH sending done recving signal for request %s to %s:%d",
+            request_id,
+            remote_host,
+            remote_handshake_port,
+        )
+        sock: zmq.Socket | None = None  # type: ignore
+        try:
+            sock = self._get_remote_socket(remote_host, remote_handshake_port)
+            data_bytes = self.encoder.encode((DONE_RECVING_MSG, request_id, {}))
+            ensure_zmq_send(sock, data_bytes, f"{remote_host}:{remote_handshake_port}")
+            resp = ensure_zmq_recv(
+                sock, self.remote_poller, f"{remote_host}:{remote_handshake_port}", timeout=self.timeout
+            )
+            logger.debug("D2RH received response for request %s: %s", request_id, resp.decode("utf-8"))
+            if resp != b"ACK":
+                logger.error(
+                    "D2RH failed to receive ACK for request %s from %s:%d",
+                    request_id,
+                    remote_host,
+                    remote_handshake_port,
+                )
+                raise RuntimeError(f"Failed to receive ACK, resp: {resp.decode('utf-8')}")
+        except RuntimeError as e:
+            if isinstance(sock, zmq.Socket):  # type: ignore
+                sock.close()
+                sock = None
+                logger.warning(
+                    "D2RH unexpected error occurred in socket, %s, closing the original channel",
+                    e,
+                )
+        finally:
+            if sock is not None:
+                self._return_remote_socket(sock, remote_host, remote_handshake_port)
+                logger.debug("Returned socket to pool for %s:%d", remote_host, remote_handshake_port)
 
     def send_staging_full(self, request_id: str) -> None:
         """Notify scheduler that CPU staging has no free blocks."""
@@ -813,6 +864,7 @@ class KVCacheRecvingThread(threading.Thread):
         cpu_kv_caches_base_addr,
         cpu_te_rpc_port,
         cpu_kvcache_manager,
+        use_cpu_staging: bool = False,
         prefill_pp_layer_partition: str | None = None,
     ):
         super().__init__(daemon=True, name="KVCacheRecvingThread")
@@ -829,6 +881,7 @@ class KVCacheRecvingThread(threading.Thread):
         self.cpu_kv_caches_base_addr = cpu_kv_caches_base_addr
         self.cpu_te_rpc_port = cpu_te_rpc_port
         self.cpu_kvcache_manager = cpu_kvcache_manager
+        self.use_cpu_staging = use_cpu_staging
 
         self.kv_caches = kv_caches
         self.kv_caches_base_addr: dict[str, dict[int, list[int]]] = SizedDict()
@@ -947,16 +1000,22 @@ class KVCacheRecvingThread(threading.Thread):
         except Exception as e:
             logger.error(f"Failed to transfer KV cache for request {remote_request_id}: {e}", exc_info=True)
         finally:
-            self._send_done_signal_to_free_remote_port(remote_request_id, remote_host, remote_port_send_num)
+            if not self.use_cpu_staging:
+                self._send_done_signal_to_free_remote_port(remote_request_id, remote_host, remote_port_send_num)
             if all_task_done:
                 self.task_tracker.update_done_task_count(request_id)
                 if request_id in self.proc_not_transfer_request:
                     del self.proc_not_transfer_request[request_id]
             self.request_queue.task_done()
-            # Always send the done signal to the remote host to ensure proper
-            # resource cleanup. Failing to do so may cause a memory leak on the
-            # remote host.
-            self._send_done_recv_signal(remote_request_id, remote_host, remote_handshake_port, remote_port_send_num)
+            if not self.use_cpu_staging:
+                self._send_done_recv_signal(
+                    remote_request_id, remote_host, remote_handshake_port, remote_port_send_num
+                )
+            elif len(req_meta.get("local_block_ids", [])) == 0:
+                # Full prefix cache hit: no hop2 pull, but P still needs the release signal.
+                self._send_done_recv_signal(
+                    remote_request_id, remote_host, remote_handshake_port, remote_port_send_num
+                )
 
     def _send_done_signal_to_free_remote_port(
         self, request_id: str, remote_host: str, remote_port_send_num: dict[int, RemotePortInfo]
@@ -1966,7 +2025,8 @@ class MooncakeConnectorWorker:
                 cpu_kv_caches_base_addr,
                 cpu_te_rpc_port,
                 cpu_kvcache_manager_instance,
-                self._prefill_pp_layer_partition,
+                use_cpu_staging=True,
+                prefill_pp_layer_partition=self._prefill_pp_layer_partition,
             )
             self.kv_recv_thread.start()
 
