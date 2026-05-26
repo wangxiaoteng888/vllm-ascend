@@ -1,0 +1,52 @@
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-e0e529b9-0ef8-4fef-b1c4-147a49fe4166-9f970a32, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-99fc8ef3-2529-4997-8d91-22c1e48677c0-b1930035
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-99fc8ef3-2529-4997-8d91-22c1e48677c0-b1930035, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-ff3c7d73-0d3f-4281-b95d-cabbeef02366-99aa8c7e
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-ff3c7d73-0d3f-4281-b95d-cabbeef02366-99aa8c7e, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-84c10bbd-0838-4038-827a-91d3a0738a01-bd253552
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-84c10bbd-0838-4038-827a-91d3a0738a01-bd253552, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-377984af-8bc1-4482-a07b-4cf5d8596051-a70e635c
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-377984af-8bc1-4482-a07b-4cf5d8596051-a70e635c, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-078470a4-7659-42d2-b79c-eb94cc410f2a-be5c8091
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-078470a4-7659-42d2-b79c-eb94cc410f2a-be5c8091, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-907b7108-4c34-4d19-951a-ef850354774e-ba401060
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-907b7108-4c34-4d19-951a-ef850354774e-ba401060, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-d6fbe53a-7314-4860-a175-0e154517fa85-83b33daa
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-d6fbe53a-7314-4860-a175-0e154517fa85-83b33daa, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-6197bee8-92bf-4465-a91c-3608541b0428-af6002c3
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-6197bee8-92bf-4465-a91c-3608541b0428-af6002c3, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-378c414c-3028-4014-ba2d-59d0b9000524-96d7c146
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-378c414c-3028-4014-ba2d-59d0b9000524-96d7c146, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-70c273b4-74c7-45bb-b61d-ae993d1f78cd-93b2e347
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-70c273b4-74c7-45bb-b61d-ae993d1f78cd-93b2e347, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-2b165a02-e7a4-4cba-a47d-428d4f46ab6a-a1263c19
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-2b165a02-e7a4-4cba-a47d-428d4f46ab6a-a1263c19, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-dad25e56-6b77-480b-8d47-e64674e6326e-bdb593dd
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 now_block=5
+(Worker_TP0_EP0 pid=94615) WARNING 05-26 11:00:31 [mooncake_connector.py:787] CPU staging full for request chatcmpl-dad25e56-6b77-480b-8d47-e64674e6326e-bdb593dd, need 12 blocks
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:751] [===] we get msg[0] msg[0]=b'START_PULL'
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:753] Got START_PULL for request chatcmpl-b13a7426-4d1c-4258-a5d7-58c46e8c4679-83d987f6
+(Worker_TP0_EP0 pid=94615) INFO 05-26 11:00:31 [mooncake_connector.py:471] [===] Dont have enough blocks req_need_blocks=12 n
