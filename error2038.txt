@@ -1,0 +1,69 @@
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962] Traceback (most recent call last):
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962] Traceback (most recent call last):
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 957, in worker_busy_loop
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 957, in worker_busy_loop
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     output = func(*args, **kwargs)
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     output = func(*args, **kwargs)
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]              ^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/worker/worker_base.py", line311, in initialize_from_config
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/worker/worker_base.py", line311, in initialize_from_config
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     self.worker.initialize_from_config(kv_cache_config)  # type: ignore
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     self.worker.initialize_from_config(kv_cache_config)  # type: ignore
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/home/liziyu/b050/vllm-ascend/vllm_ascend/worker/worker.py", line 695, in initialize_from_config
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/home/liziyu/b050/vllm-ascend/vllm_ascend/worker/worker.py", line 695, in initialize_from_config
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_transfer_state.py", line 67, in ensure_kv_transfer_initialized
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_transfer_state.py", line 67, in ensure_kv_transfer_initialized
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector(
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector(
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_connector/factory.py", line 59, in create_connector
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/distributed/kv_transfer/kv_connector/factory.py", line 59, in create_connector
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     raise ValueError(
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]     raise ValueError(
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962] ValueError: Connector MooncakeConnector does not support HMA but HMA is enabled. Please set `--disable-hybrid-kv-cache-manager`.
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962] ValueError: Connector MooncakeConnector does not support HMA but HMA is enabled. Please set `--disable-hybrid-kv-cache-manager`.
+(Worker_TP0_EP0 pid=1910879) ERROR 06-17 20:35:35 [multiproc_executor.py:962]
+(Worker_TP1_EP1 pid=1910880) ERROR 06-17 20:35:35 [multiproc_executor.py:962]
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136] EngineCore failed to start.
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136] Traceback (most recent call last):
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1110, in run_engine_core
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     return func(*args, **kwargs)
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 876, in __init__
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     super().__init__(
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 128, in __init__
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     return func(*args, **kwargs)
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 283, in _initialize_kv_caches
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     self.model_executor.initialize_from_config(kv_cache_configs)
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/abstract.py", line 123, in initialize_from_config
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     self.collective_rpc("initialize_from_config", args=(kv_cache_configs,))
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 403, incollective_rpc
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     return future if non_block else future.result()
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]                                     ^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 90, in result
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     return super().result()
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]            ^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/concurrent/futures/_base.py", line 449, in result
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     return self.__get_result()
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]            ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/concurrent/futures/_base.py", line 401, in __get_result
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     raise self._exception
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 94, in _wait_for_response
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     response = self.aggregate(self.get_response())
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]                               ^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/executor/multiproc_executor.py", line 390, inget_response
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136]     raise RuntimeError(
+(EngineCore pid=1910744) ERROR 06-17 20:35:35 [core.py:1136] RuntimeError: Worker failed with error 'Connector MooncakeConnector does not support HMA but HMA is enabled. Pleaseset `--disable-hybrid-kv-cache-manager`.', please check the stack trace above for the root cause
