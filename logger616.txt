@@ -1,0 +1,43 @@
+(Worker_DP1_EP1 pid=1852990) INFO 06-17 17:59:40 [acl_graph.py:199] Replaying aclgraph
+(EngineCore_DP0 pid=1852433) WARNING 06-17 17:59:41 [mooncake_d2rh_connector.py:4023] Receive failed. error=Receive timeout, attempts_left=2.
+(EngineCore_DP0 pid=1852433) WARNING 06-17 17:59:42 [mooncake_d2rh_connector.py:4023] Receive failed. error=Receive timeout, attempts_left=1.
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [mooncake_d2rh_connector.py:4026] Receive failed after all retries. source=90.90.97.27:8100, error=Receive timeout.
+(EngineCore_DP0 pid=1852433) WARNING 06-17 17:59:44 [mooncake_d2rh_connector.py:2704] START_PULL failed for request cmpl-1aea704b-0185-47b6-869c-f3bbe95a6cc4-0-8af417ff: Failedto receive data after 3 retries: Receive timeout
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [mooncake_d2rh_connector.py:3773] [D2RH-DEBUG] start_load_kv queue H2D tp_rank=0 request_id=cmpl-1aea704b-0185-47b6-869c-f3bbe95a6cc4-0-8af417ff remote_request_id=cmpl-1aea704b-0185-47b6-869c-f3bbe95a6cc4-0-8baee84f remote_handshake_port=31345 all_task_done=False staging_keys=[]
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [mooncake_d2rh_connector.py:3773] [D2RH-DEBUG] start_load_kv queue H2D tp_rank=0 request_id=cmpl-1aea704b-0185-47b6-869c-f3bbe95a6cc4-0-8af417ff remote_request_id=cmpl-1aea704b-0185-47b6-869c-f3bbe95a6cc4-0-8baee84f remote_handshake_port=31346 all_task_done=True staging_keys=[]
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [model_runner_v1.py:2028] [===] len(input_ids)=29
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138] EngineCore encountered a fatal error.
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138] Traceback (most recent call last):
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1129, in run_engine_core
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     engine_core.run_busy_loop()
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1747, in run_busy_loop
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     executed = self._process_engine_step()
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 1209, in _process_engine_step
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     outputs, model_executed = self.step_fn()
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]                               ^^^^^^^^^^^^^^
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core.py", line 531, in step_with_batch_queue
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     engine_core_outputs = self.scheduler.update_from_output(
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/home/liziyu/b050/vllm-ascend/vllm_ascend/core/recompute_scheduler.py", line 989, in update_from_output
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     self._update_from_kv_xfer_finished(kv_connector_output)
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/core/sched/scheduler.py", line 2129, in _update_from_kv_xfer_finished
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]     assert RequestStatus.is_finished(req.status)
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore_DP0 pid=1852433) ERROR 06-17 17:59:44 [core.py:1138] AssertionError
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [multiproc_executor.py:775] Parent process exited, terminating worker queues
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704] AsyncLLM output_handler failed.
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704] Traceback (most recent call last):
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/async_llm.py", line 660, in output_handler
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704]     outputs = await engine_core.get_output_async()
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704]               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704]   File "/usr/local/python3.11.10/lib/python3.11/site-packages/vllm/v1/engine/core_client.py", line 998, in get_output_async
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704]     raise self._format_exception(outputs) from None
+(APIServer pid=1850843) ERROR 06-17 17:59:44 [async_llm.py:704] vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue. See stack trace (above) for the rootcause.
+(APIServer pid=1850843) INFO:     90.90.97.27:47666 - "POST /v1/completions HTTP/1.1" 500 Internal Server Error
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [acl_graph.py:199] Replaying aclgraph
+(APIServer pid=1850843) INFO:     90.90.97.27:47668 - "POST /v1/completions HTTP/1.1" 500 Internal Server Error
+(APIServer pid=1850843) INFO:     90.90.97.27:47684 - "POST /v1/completions HTTP/1.1" 500 Internal Server Error
+(Worker_DP0_EP0 pid=1852993) INFO 06-17 17:59:44 [multiproc_executor.py:872] WorkerProc shutting down.
+(APIServer pid=1850843) INFO:     Shutting down
