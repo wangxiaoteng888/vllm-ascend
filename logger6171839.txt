@@ -1,0 +1,90 @@
+(APIServer pid=1870938) INFO:     Started server process [1870938]
+(APIServer pid=1870938) INFO:     Waiting for application startup.
+(APIServer pid=1870938) INFO:     Application startup complete.
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:37:30 [mooncake_d2rh_connector.py:2859] [D2RH-DEBUG] scheduler START_PULL plan request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e remote_request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-8bd1ac6b decode_tp_size=1 runtime_tp_size=1 runtime_pp_size=1 runtime_pcp_size=1 local_host=90.90.97.27
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:37:30 [mooncake_d2rh_connector.py:2883] [D2RH-DEBUG] scheduler START_PULL target decode_tp_rank=0 port=8100 base=8100 dp_rank=0 dp_rank_local=0 dp_offset=0 tp_rank=0 pp_rank=0 pcp_rank=0 device_index=0 tp=1 pp=1 pcp=1
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:37:30 [mooncake_d2rh_connector.py:2631] [D2RH-DEBUG] START_PULL sending pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e decode_tp_rank=0 timeout=15.0s port=8100 base=8100 dp_rank=0 dp_rank_local=0 dp_offset=0 tp_rank=0 pp_rank=0 pcp_rank=0 device_index=0tp=1 pp=1 pcp=1
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:37:30 [mooncake_d2rh_connector.py:2650] [D2RH-DEBUG] START_PULL sent waiting reply pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e elapsed=0.001s
+(Worker_DP1_EP1 pid=1871458) INFO 06-17 18:37:30 [acl_graph.py:199] Replaying aclgraph
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:37:45 [mooncake_d2rh_connector.py:4311] Receive failed. error=Receive timeout, attempts_left=2.
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:38:00 [mooncake_d2rh_connector.py:4311] Receive failed. error=Receive timeout, attempts_left=1.
+(EngineCore_DP0 pid=1871234) ERROR 06-17 18:38:15 [mooncake_d2rh_connector.py:4314] Receive failed after all retries. source=tcp://90.90.97.27:8100, error=Receive timeout.
+(EngineCore_DP0 pid=1871234) ERROR 06-17 18:38:15 [mooncake_d2rh_connector.py:2674] [D2RH-DEBUG] START_PULL failed pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e elapsed=45.239s err=Failed to receive data after 3 retries: Receive timeout
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:38:15 [mooncake_d2rh_connector.py:2919] START_PULL failed for request cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e: Failedto receive data after 3 retries: Receive timeout
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:38:15 [mooncake_d2rh_connector.py:2950] [D2RH-DEBUG] skip _reqs_need_recv request_id=cmpl-ebfb3f01-cbd9-4729-8507-6eb76c9ab97c-0-a8cbb08e num_external_tokens=0 (START_PULL likely failed or no remote tokens)
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=29
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [acl_graph.py:199] Replaying aclgraph
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:15 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:38:16 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(APIServer pid=1870938) INFO:     90.90.97.27:56544 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=1870938) INFO 06-17 18:38:21 [loggers.py:271] Engine 000: Avg prompt throughput: 2.9 tokens/s, Avg generation throughput: 3.0 tokens/s, Running: 0 reqs, Waiting:0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 0.0%
+(APIServer pid=1870938) INFO 06-17 18:38:31 [loggers.py:271] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 0.0 tokens/s, Running: 0 reqs, Waiting:0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 0.0%
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:38:32 [mooncake_d2rh_connector.py:2859] [D2RH-DEBUG] scheduler START_PULL plan request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af remote_request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-b55df7c8 decode_tp_size=1 runtime_tp_size=1 runtime_pp_size=1 runtime_pcp_size=1 local_host=90.90.97.27
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:38:32 [mooncake_d2rh_connector.py:2883] [D2RH-DEBUG] scheduler START_PULL target decode_tp_rank=0 port=8100 base=8100 dp_rank=0 dp_rank_local=0 dp_offset=0 tp_rank=0 pp_rank=0 pcp_rank=0 device_index=0 tp=1 pp=1 pcp=1
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:38:32 [mooncake_d2rh_connector.py:2631] [D2RH-DEBUG] START_PULL sending pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af decode_tp_rank=0 timeout=15.0s port=8100 base=8100 dp_rank=0 dp_rank_local=0 dp_offset=0 tp_rank=0 pp_rank=0 pcp_rank=0 device_index=0tp=1 pp=1 pcp=1
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:38:32 [mooncake_d2rh_connector.py:2650] [D2RH-DEBUG] START_PULL sent waiting reply pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af elapsed=0.001s
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:38:47 [mooncake_d2rh_connector.py:4311] Receive failed. error=Receive timeout, attempts_left=2.
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:39:02 [mooncake_d2rh_connector.py:4311] Receive failed. error=Receive timeout, attempts_left=1.
+(EngineCore_DP0 pid=1871234) ERROR 06-17 18:39:18 [mooncake_d2rh_connector.py:4314] Receive failed after all retries. source=tcp://90.90.97.27:8100, error=Receive timeout.
+(EngineCore_DP0 pid=1871234) ERROR 06-17 18:39:18 [mooncake_d2rh_connector.py:2674] [D2RH-DEBUG] START_PULL failed pid=1871234 path=tcp://90.90.97.27:8100 request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af elapsed=45.239s err=Failed to receive data after 3 retries: Receive timeout
+(EngineCore_DP0 pid=1871234) WARNING 06-17 18:39:18 [mooncake_d2rh_connector.py:2919] START_PULL failed for request cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af: Failedto receive data after 3 retries: Receive timeout
+(EngineCore_DP0 pid=1871234) INFO 06-17 18:39:18 [mooncake_d2rh_connector.py:2950] [D2RH-DEBUG] skip _reqs_need_recv request_id=cmpl-929fdaf7-2081-464e-bd78-59a329383f9c-0-8e0981af num_external_tokens=0 (START_PULL likely failed or no remote tokens)
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=29
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(Worker_DP0_EP0 pid=1871457) INFO 06-17 18:39:18 [model_runner_v1.py:2028] [===] len(input_ids)=4
+(APIServer pid=1870938) INFO:     90.90.97.27:35840 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=1870938) INFO 06-17 18:39:21 [loggers.py:271] Engine 000: Avg prompt throughput: 2.9 tokens/s, Avg generation throughput: 3.0 tokens/s, Running: 0 reqs, Waiting:0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%, External prefix cache hit rate: 0.0%
