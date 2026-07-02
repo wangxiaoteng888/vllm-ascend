@@ -902,7 +902,7 @@ class NPUWorker(WorkerBase):
             return None
         tp_rank = get_tp_group().rank_in_group
         pp_rank = get_pp_group().rank_in_group
-        pcp_size = get_pcp_group().world_size()
+        pcp_size = get_pcp_group().world_size
         pcp_rank = get_pcp_group().rank_in_group
         if pcp_size > 1:
             return {{pp_rank, pcp_rank, tp_rank}: metadata}
