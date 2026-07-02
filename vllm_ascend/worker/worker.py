@@ -38,6 +38,7 @@ from vllm.distributed.kv_transfer import (
     has_kv_transfer_group,
 )
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorHandshakeMetadata
+from vllm.distributed import get_pcp_group
 from vllm.distributed.parallel_state import Handle, get_pp_group, get_tp_group
 from vllm.logger import logger
 from vllm.lora.request import LoRARequest
@@ -901,6 +902,10 @@ class NPUWorker(WorkerBase):
             return None
         tp_rank = get_tp_group().rank_in_group
         pp_rank = get_pp_group().rank_in_group
+        pcp_size = get_pcp_group().world_size()
+        pcp_rank = get_pcp_group().rank_in_group
+        if pcp_size > 1:
+            return {{pp_rank, pcp_rank, tp_rank}: metadata}
         return {(pp_rank, tp_rank): metadata}
 
     def get_kv_cache_spec(self) -> dict[str, KVCacheSpec]:
