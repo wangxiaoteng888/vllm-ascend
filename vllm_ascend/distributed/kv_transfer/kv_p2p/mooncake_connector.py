@@ -11,7 +11,7 @@ import struct
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -1500,7 +1500,7 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_worker is not None
         return self.connector_worker.xfer_handshake_metadata
 
-    def set_xfer_handshake_metadata(self, metadata: dict[int, KVConnectorHandshakeMetadata]) -> None:
+    def set_xfer_handshake_metadata(self, metadata: Mapping[int, KVConnectorHandshakeMetadata]) -> None:
         """
         Set the KV connector handshake metadata for this connector.
 
@@ -1511,7 +1511,7 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector_scheduler.set_xfer_handshake_metadata(metadata)
 
     def set_xfer_handshake_metadata_pp_aware(
-        self, metadata: dict[tuple[int, ...], KVConnectorHandshakeMetadata]
+        self, metadata: Mapping[tuple[int, ...], KVConnectorHandshakeMetadata]
     ) -> None:
         assert self.connector_scheduler is not None
         self.connector_scheduler.set_xfer_handshake_metadata_from_workers(metadata)
@@ -1825,7 +1825,7 @@ class MooncakeConnectorScheduler:
 
     def set_xfer_handshake_metadata_from_workers(
         self,
-        metadata: dict[int | tuple[int, ...], KVConnectorHandshakeMetadata],
+        metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata],
     ) -> None:
         """Build host mapping for one DP group that may span multiple nodes."""
         if not metadata:
@@ -1847,7 +1847,7 @@ class MooncakeConnectorScheduler:
             self.multi_nodes_meta_mapping,
         )
 
-    def set_xfer_handshake_metadata(self, metadata: dict[int, KVConnectorHandshakeMetadata]) -> None:
+    def set_xfer_handshake_metadata(self, metadata: Mapping[int, KVConnectorHandshakeMetadata]) -> None:
         """Legacy int-keyed entry point (port offset keys)."""
         self.set_xfer_handshake_metadata_from_workers(metadata)
 
