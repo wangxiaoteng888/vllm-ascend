@@ -1511,7 +1511,7 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector_scheduler.set_xfer_handshake_metadata(metadata)
 
     def set_xfer_handshake_metadata_pp_aware(
-        self, metadata: Mapping[tuple[int, ...], KVConnectorHandshakeMetadata]
+        self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]
     ) -> None:
         assert self.connector_scheduler is not None
         self.connector_scheduler.set_xfer_handshake_metadata_from_workers(metadata)
@@ -1847,7 +1847,7 @@ class MooncakeConnectorScheduler:
             self.multi_nodes_meta_mapping,
         )
 
-    def set_xfer_handshake_metadata(self, metadata: Mapping[int, KVConnectorHandshakeMetadata]) -> None:
+    def set_xfer_handshake_metadata(self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]) -> None:
         """Legacy int-keyed entry point (port offset keys)."""
         self.set_xfer_handshake_metadata_from_workers(metadata)
 
