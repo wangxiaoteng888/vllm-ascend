@@ -1500,7 +1500,9 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.connector_worker is not None
         return self.connector_worker.xfer_handshake_metadata
 
-    def set_xfer_handshake_metadata(self, metadata: Mapping[int, KVConnectorHandshakeMetadata]) -> None:
+    def set_xfer_handshake_metadata(
+        self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]
+    ) -> None:
         """
         Set the KV connector handshake metadata for this connector.
 
