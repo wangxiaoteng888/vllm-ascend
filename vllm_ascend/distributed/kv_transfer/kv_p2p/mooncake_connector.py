@@ -1852,7 +1852,7 @@ class MooncakeConnectorScheduler:
     def set_xfer_handshake_metadata(
         self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]
     ) -> None:
-        """Legacy int-keyed entry point (port offset keys)."""
+        """Legacy int-keyed entry point (port-offset keys)."""
         self.set_xfer_handshake_metadata_from_workers(metadata)
 
 
