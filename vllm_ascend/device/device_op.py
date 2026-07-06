@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import torch_npu
 from vllm.triton_utils import HAS_TRITON
 
+from vllm_ascend.device import utils as device_utils
 from vllm_ascend.device.mxfp_compat import (
     FLOAT8_E8M0FNU_DTYPE,
     QUANT_DTYPES,
@@ -47,6 +48,54 @@ class BaseDeviceAdaptor:
     def reshape_and_cache(cls, key, value, key_cache, value_cache, slot_mapping):
         torch_npu._npu_reshape_and_cache(
             key=key, value=value, key_cache=key_cache, value_cache=value_cache, slot_indices=slot_mapping
+        )
+
+    @classmethod
+    def npu_fused_infer_attention_score(
+        cls,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        value: torch.Tensor | None,
+        attn_metadata: Any,
+        *,
+        key_cache: torch.Tensor | None,
+        value_cache: torch.Tensor | None,
+        current_key: torch.Tensor,
+        current_value: torch.Tensor,
+        num_heads: int,
+        num_key_value_heads: int,
+        head_size: int,
+        scale: float,
+        is_prefill_no_cache: bool,
+        **kwargs,
+    ):
+        # TODO: Remove this fallback when A2/A3 FIA TND supports Gemma4's
+        # 512-dim global attention heads. The FIA path slices/replaces
+        # query/key/value before this wrapper, so large-head prefill fallback
+        # must use the original current-token K/V.
+        if head_size == device_utils.FIA_TND_LARGE_HEAD_FALLBACK_HEAD_SIZE:
+            return device_utils.npu_large_head_prefill_attention(
+                query,
+                current_key,
+                current_value,
+                attn_metadata,
+                key_cache=key_cache,
+                value_cache=value_cache,
+                num_heads=num_heads,
+                num_kv_heads=num_key_value_heads,
+                head_size=head_size,
+                scale=scale,
+                is_prefill_no_cache=is_prefill_no_cache,
+            )
+
+        return torch_npu.npu_fused_infer_attention_score(
+            query=query,
+            key=key,
+            value=value,
+            num_key_value_heads=num_key_value_heads,
+            num_heads=num_heads,
+            scale=scale,
+            **kwargs,
         )
 
     @staticmethod
@@ -795,6 +844,16 @@ class BaseDeviceAdaptor:
             permuted_tokens=permuted_tokens, sorted_indices=torch.abs(sorted_indices), probs=probs
         )
 
+    @staticmethod
+    def index_fill(
+        tensor: torch.Tensor,
+        dim: int,
+        indices: torch.Tensor,
+        value: int,
+    ) -> torch.Tensor:
+        tensor.index_fill_(dim, indices, value)
+        return tensor
+
 
 class A5DeviceAdaptor(BaseDeviceAdaptor):
     @classmethod
@@ -806,6 +865,35 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
             value_cache=value_cache,
             slot_mapping=slot_mapping.contiguous(),
             cache_mode="Norm",
+        )
+
+    @classmethod
+    def npu_fused_infer_attention_score(
+        cls,
+        query: torch.Tensor,
+        key: torch.Tensor | None,
+        value: torch.Tensor | None,
+        attn_metadata: Any,
+        *,
+        key_cache: torch.Tensor | None,
+        value_cache: torch.Tensor | None,
+        current_key: torch.Tensor,
+        current_value: torch.Tensor,
+        num_heads: int,
+        num_key_value_heads: int,
+        head_size: int,
+        scale: float,
+        is_prefill_no_cache: bool,
+        **kwargs,
+    ):
+        return torch_npu.npu_fused_infer_attention_score(
+            query=query,
+            key=key,
+            value=value,
+            num_key_value_heads=num_key_value_heads,
+            num_heads=num_heads,
+            scale=scale,
+            **kwargs,
         )
 
     @staticmethod
@@ -1720,10 +1808,39 @@ class A5DeviceAdaptor(BaseDeviceAdaptor):
         )
 
 
+class Ascend310PDeviceAdaptor(BaseDeviceAdaptor):
+    @staticmethod
+    def index_fill(
+        tensor: torch.Tensor,
+        dim: int,
+        indices: torch.Tensor,
+        value: int,
+    ) -> torch.Tensor:
+        # index_fill_ is unavailable on 310P; emulate it with a boolean mask
+        # along `dim` so behavior matches torch.index_fill_ for any dim,
+        # negative indices, empty indices and arbitrary tensor rank.
+        if indices.numel() == 0:
+            return tensor
+        dim_size = tensor.size(dim)
+        norm_indices = torch.where(indices < 0, indices + dim_size, indices)
+        pos = torch.arange(
+            dim_size,
+            device=tensor.device,
+            dtype=norm_indices.dtype,
+        )
+        mask = torch.eq(pos.unsqueeze(1), norm_indices.unsqueeze(0)).any(dim=1)
+        idx = [slice(None)] * tensor.dim()
+        idx[dim] = mask
+        tensor[tuple(idx)] = value
+        return tensor
+
+
 def get_device_adaptor() -> type["BaseDeviceAdaptor"]:
     ascend_device_type = get_ascend_device_type()
     if ascend_device_type == AscendDeviceType.A5:
         return A5DeviceAdaptor
+    if ascend_device_type == AscendDeviceType._310P:
+        return Ascend310PDeviceAdaptor
     return BaseDeviceAdaptor
 
 
