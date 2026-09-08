@@ -1518,33 +1518,6 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         block_ids: BlockIds,
     ) -> tuple[bool, dict[str, Any] | None]:
         delay_free, params = super().request_finished(request, block_ids)
-        if params is not None:
-            # vLLM 0.26 may reduce CacheConfig.block_size (and
-            # hash_block_size) to the hybrid allocator's shared quantum (2 for
-            # DeepSeek-V4), although the connector workers still register
-            # transfer blocks at the attention-spec granularity (32 here).
-            # Publishing the shared quantum makes the D worker try to map a
-            # 2-token remote block onto a 32-token transfer kernel. Derive the
-            # transfer granularity from the concrete KV specs, matching the
-            # block_size advertised by MooncakeAgentMetadata. The fallbacks
-            # retain compatibility with older, uniform-cache vLLM versions.
-            spec_block_sizes = [
-                int(spec.block_size)
-                for group in self.kv_cache_groups
-                for spec in self._get_group_unique_specs(group)
-                if getattr(spec, "block_size", None)
-            ]
-            transfer_block_size = max(
-                spec_block_sizes,
-                default=int(getattr(self.vllm_config.cache_config, "hash_block_size", None) or self.block_size),
-            )
-            if params.get("remote_block_size") != transfer_block_size:
-                logger.info(
-                    "D2RH remote block size normalized from %s to %s",
-                    params.get("remote_block_size"),
-                    transfer_block_size,
-                )
-            params["remote_block_size"] = transfer_block_size
         if self.enable_host_cache and self.host_cache_hash_source == "prefill" and params is not None:
             remote_block_ids: BlockIds = params["remote_block_ids"]
             params["d2rh_block_hashes"] = self._d2rh_get_transfer_block_hashes(
