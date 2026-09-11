@@ -1622,13 +1622,19 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         self._connector_metadata = MooncakeConnectorMetadata()
 
         if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
-                vllm_config, str(self.engine_id), kv_cache_config
+            self.connector_scheduler: MooncakeConnectorScheduler | None = self._create_scheduler(
+                vllm_config, kv_cache_config
             )
             self.connector_worker: MooncakeConnectorWorker | None = None
         elif role == KVConnectorRole.WORKER:
             self.connector_scheduler = None
-            self.connector_worker = MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
+            self.connector_worker = self._create_worker(vllm_config, kv_cache_config)
+
+    def _create_scheduler(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
+        return MooncakeConnectorScheduler(vllm_config, str(self.engine_id), kv_cache_config)
+
+    def _create_worker(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
+        return MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
 
     ############################################################
     # Scheduler Side Methods
@@ -2558,7 +2564,6 @@ class MooncakeConnectorWorker:
         # layer indices: {group_id: (group_spec, [layer_idx0, layer_idx1, ...])}.
         self.kv_group2layeridx = self._build_kv_group2layeridx()
         self._is_hma_required = self._is_hma_required or self._requires_group_aware_attention_transfer()
-        has_mamba_group = self._has_mamba_group()
         layer_name_to_idx = {
             layer_name: layer_idx
             for _, (group_spec, layer_indices) in self.kv_group2layeridx.items()
@@ -2595,18 +2600,7 @@ class MooncakeConnectorWorker:
                 self.block_size_scale[layer_idx].append(block_size_scale)
                 self.kv_caches_base_addr[layer_idx].append(single_kv_cache.data_ptr())
 
-        if has_mamba_group:
-            ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)
-            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
-        elif self.use_hybrid:
-            ptrs, lengths = self._get_registered_kv_tensor_buffers_hybrid(kv_caches)
-            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
-        else:
-            # For normal attention / sparse-c8 KV cache, keep metadata at the
-            # logical tensor level but merge registration ranges by underlying
-            # storage to avoid exceeding the HCCL per-process region limit.
-            register_regions = collect_storage_merged_register_regions(kv_caches)
-
+        register_regions = self._get_register_regions(kv_caches)
         validate_register_region_count(register_regions)
         global_te.register_buffer(register_regions.ptrs, register_regions.lengths)
 
@@ -2655,25 +2649,7 @@ class MooncakeConnectorWorker:
             )
             self.kv_send_thread.start()
         else:
-            self.kv_recv_thread = KVCacheRecvingThread(
-                self.tp_rank,
-                self.tp_size,
-                self._prefill_pp_size,
-                self.engine,
-                self.engine_id,
-                self.handshake_port,
-                self.side_channel_port,
-                self.kv_caches_base_addr,
-                self.block_len_per_addr,
-                self.block_stride_per_addr,
-                self._is_hma_required,
-                ready_event,
-                self.vllm_config,
-                self.kv_caches,
-                self._prefill_pp_layer_partition,
-                self.kv_group2layeridx,
-                self.block_size_scale,
-            )
+            self.kv_recv_thread = self._create_recv_thread(ready_event)
             self.kv_recv_thread.start()
         start_wait_time = time.time()
         thread = self.kv_send_thread if self.kv_role == "kv_producer" else self.kv_recv_thread
@@ -2684,6 +2660,48 @@ class MooncakeConnectorWorker:
             if time.time() - start_wait_time > 5 * 60:
                 raise RuntimeError("Timeout waiting for KV Cache thread to be ready.")
             time.sleep(3)
+
+    def _get_register_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
+        """Collect HBM regions; staging connectors may append Host regions."""
+        if self._has_mamba_group():
+            ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)
+            return RegisterRegions(ptrs=ptrs, lengths=lengths)
+        if self.use_hybrid:
+            ptrs, lengths = self._get_registered_kv_tensor_buffers_hybrid(kv_caches)
+            return RegisterRegions(ptrs=ptrs, lengths=lengths)
+        # Merge storage aliases to stay below the transport's region limit.
+        return collect_storage_merged_register_regions(kv_caches)
+
+    def _create_recv_thread(
+        self,
+        ready_event: threading.Event,
+        *,
+        receiver_cls: type[KVCacheRecvingThread] | None = None,
+        **kwargs: Any,
+    ) -> KVCacheRecvingThread:
+        """Construct a receiver using the common V1 worker metadata."""
+        if receiver_cls is None:
+            receiver_cls = KVCacheRecvingThread
+        return receiver_cls(
+            self.tp_rank,
+            self.tp_size,
+            self._prefill_pp_size,
+            self.engine,
+            self.engine_id,
+            self.handshake_port,
+            self.side_channel_port,
+            self.kv_caches_base_addr,
+            self.block_len_per_addr,
+            self.block_stride_per_addr,
+            self._is_hma_required,
+            ready_event,
+            self.vllm_config,
+            self.kv_caches,
+            self._prefill_pp_layer_partition,
+            self.kv_group2layeridx,
+            self.block_size_scale,
+            **kwargs,
+        )
 
     def get_finished(self) -> tuple[set[str], set[str]]:
         done_sending = (

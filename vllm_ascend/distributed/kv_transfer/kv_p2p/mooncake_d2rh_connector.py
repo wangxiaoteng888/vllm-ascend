@@ -8,47 +8,40 @@ import struct
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import msgspec
 import numpy as np
-import numpy.typing as npt
 import torch
 import zmq
 from mooncake.engine import TransferEngine  # type: ignore
-from vllm import envs
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer.kv_connector.utils import BlockIds
-from vllm.distributed.kv_transfer.kv_connector.v1.base import (
-    KVConnectorBase_V1,
-    KVConnectorHandshakeMetadata,
-    KVConnectorMetadata,
-    KVConnectorRole,
-    SupportsHMA,
-)
-from vllm.distributed.utils import get_pp_indices
 from vllm.logger import logger
 from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
-from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     GroupPull,
-    KVCacheSendingThread,
+    KVCacheTaskTracker,
     MooncakeAgentMetadata,
-    MooncakeConnectorMetadata,
     SizedDict,
     build_layer_name_to_cache_slots,
     build_layer_name_to_metadata_idx,
+    ensure_zmq_send,
     resolve_group_cache_slot_pairs,
     resolve_remote_layer_idx,
     split_if_not_byte_contiguous,
+    string_to_int64_hash,
+    zmq_ctx,
 )
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     KVCacheRecvingThread as BaseKVCacheRecvingThread,
+)
+from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
+    MooncakeConnector as BaseMooncakeConnector,
 )
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     MooncakeConnectorScheduler as BaseMooncakeConnectorScheduler,
@@ -59,18 +52,10 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     group_concurrent_contiguous as base_group_concurrent_contiguous,
 )
-from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
-from vllm_ascend.distributed.kv_transfer.utils.utils import (
-    RegisterRegions,
-    collect_storage_merged_register_regions,
-    validate_register_region_count,
-)
-from vllm_ascend.utils import enable_sfa_dcp_replicated_indexer
+from vllm_ascend.distributed.kv_transfer.utils.utils import RegisterRegions
 
 # isort: off
 if TYPE_CHECKING:
-    from vllm.v1.attention.backend import AttentionMetadata  # type: ignore
-    from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.request import Request
 # isort: on
@@ -98,76 +83,6 @@ HostCacheKey = tuple[int, int, bytes]
 # TP=1 / DP0 / PP0 / PCP0 鈫?D2RH=8100, READY=8200 (same as legacy hardcoded values).
 D2RH_ZMQ_PORT_BASE = 38100
 SCHEDULER_READY_ZMQ_PORT_BASE = 38200
-
-
-class KVCacheTaskTracker:
-    def __init__(self):
-        super().__init__()
-
-        self.done_task_lock = threading.Lock()
-        self.finished_requests: set[str] = set()
-        # Only used in prefill node. Tracks requests whose kv blocks freeing is
-        # intentionally delayed. Each entry is a tuple of (request_id,
-        # timestamp). If a request remains in this queue for too long, it will
-        # be force-freed.
-        self.delayed_free_requests: OrderedDict[str, float] = OrderedDict()
-        self.reqs_to_process: set[str] = set()
-
-    def add_req_to_process(self, request_id: str):
-        self.reqs_to_process.add(request_id)
-
-    def add_not_transfer_request(self, request_id: str):
-        with self.done_task_lock:
-            self.finished_requests.add(request_id)
-            self.reqs_to_process.discard(request_id)
-
-    def update_done_task_count(self, request_id: str):
-        with self.done_task_lock:
-            if request_id in self.reqs_to_process:
-                self.finished_requests.add(request_id)
-                self.reqs_to_process.discard(request_id)
-                self.delayed_free_requests.pop(request_id, None)
-            else:
-                logger.error(
-                    "MooncakeConnector finish req not in reqs to process."
-                    "If it is a P node, this request may have been force freed."
-                )
-
-    def get_and_clear_finished_requests(self) -> set[str]:
-        """
-        Get and clear the requests that have been completed.
-        Returns:
-            A set of request IDs that have been completed.
-        """
-        with self.done_task_lock:
-            finished_requests = self.finished_requests.copy()
-            expired_requests = self._retrieve_expired_requests()
-            finished_requests.update(expired_requests)
-            self.finished_requests.clear()
-        return finished_requests
-
-    def add_delayed_request(self, request_id: str, delay_start_time: float):
-        """Add a delayed free request."""
-        with self.done_task_lock:
-            if request_id in self.reqs_to_process:
-                self.delayed_free_requests[request_id] = delay_start_time
-
-    def _retrieve_expired_requests(self):
-        """Retrieve all expired delayed requests."""
-        expired_requests: set[str] = set()
-        # Free delayed requests if they exceed the timeout
-        current_time = time.time()
-        while self.delayed_free_requests:
-            request_id = next(iter(self.delayed_free_requests))
-            delay_start_time = self.delayed_free_requests[request_id]
-            if current_time - delay_start_time > envs.VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT:
-                self.delayed_free_requests.popitem(last=False)
-                self.reqs_to_process.discard(request_id)
-                expired_requests.add(request_id)
-                logger.info("Force freed request: %s", request_id)
-            else:
-                break
-        return expired_requests
 
 
 class HostListeningThread(threading.Thread):
@@ -283,73 +198,6 @@ class HostListeningThread(threading.Thread):
                 logger.error("Connection listener got exception %s: %s", type(e), e)
 
 
-@contextmanager
-def zmq_ctx(socket_type: Any, addr: str) -> Iterator[zmq.Socket]:  # type: ignore
-    """Context manager for a ZMQ socket"""
-
-    if socket_type not in (zmq.ROUTER, zmq.REQ, zmq.DEALER):  # type: ignore
-        raise ValueError(f"Unexpected socket type: {socket_type}")
-
-    ctx: zmq.Context | None = None  # type: ignore
-    try:
-        ctx = zmq.Context()  # type: ignore
-        yield make_zmq_socket(ctx=ctx, path=addr, socket_type=socket_type, bind=socket_type == zmq.ROUTER)  # type: ignore
-    finally:
-        if ctx is not None:
-            ctx.destroy(linger=0)
-
-
-def group_concurrent_contiguous(
-    src: list[int], dst: list[int]
-) -> tuple[list[npt.NDArray[np.int64]], list[npt.NDArray[np.int64]]]:
-    """Vectorised NumPy implementation."""
-    src_indices: npt.NDArray[np.int64] = np.array(src, dtype=np.int64)
-    dst_indices: npt.NDArray[np.int64] = np.array(dst, dtype=np.int64)
-
-    if src_indices.size == 0:
-        return [], []
-
-    brk = np.where((np.diff(src_indices) != 1) | (np.diff(dst_indices) != 1))[0] + 1
-    src_groups = np.split(src_indices, brk)
-    dst_groups = np.split(dst_indices, brk)
-
-    src_groups = [g.tolist() for g in src_groups]
-    dst_groups = [g.tolist() for g in dst_groups]
-
-    return src_groups, dst_groups
-
-
-def string_to_int64_hash(input_str):
-    """
-    Hash the string using SHA-256 and convert it into an int64 integer.
-    """
-    hashed_bytes = hashlib.sha256(input_str.encode("utf-8")).digest()
-    trunked_bytes = hashed_bytes[:8]
-    uint64_value = struct.unpack("<Q", trunked_bytes)[0]
-    return uint64_value
-
-
-def ensure_zmq_send(
-    socket: zmq.Socket,  # type: ignore
-    data: bytes,
-    path: str,
-    max_retries: int = 3,
-):
-    retries_left = max_retries
-    while True:
-        try:
-            socket.send(data)
-            return
-        except zmq.ZMQError as e:  # type: ignore
-            retries_left -= 1
-            if retries_left > 0:
-                logger.warning("Send failed: %s, retrying... (%s attempts left)", e, retries_left)
-                time.sleep(0.1)
-            else:
-                logger.error("Send failed after all retries: %s", e)
-                raise RuntimeError(f"Failed to send data to {path} after {max_retries} retries: {e}")
-
-
 def ensure_zmq_recv(
     socket: zmq.Socket,  # type: ignore
     poller: zmq.Poller,  # type: ignore
@@ -373,28 +221,6 @@ def ensure_zmq_recv(
             else:
                 logger.error("Receive failed from %s after all retries: %s", path, e)
                 raise RuntimeError(f"Failed to receive data after {max_retries} retries: {e}")
-
-
-# decode node should know pp_partition_layer in prefill node,
-# it is configured in kv_transfer_config by partition_list_str,
-# default using vllm layer split algorithm.
-def get_prefill_pp_indices(
-    num_hidden_layers: int, pp_rank: int, pp_size: int, partition_list_str: str | None = None
-) -> tuple[int, int]:
-    if partition_list_str is None:
-        return get_pp_indices(num_hidden_layers, pp_rank, pp_size)
-    else:
-        try:
-            partitions = [int(layer) for layer in partition_list_str.split(",")]
-        except ValueError as err:
-            raise ValueError("Invalid partition string: {}".format(partition_list_str)) from err
-        if len(partitions) != pp_size:
-            raise ValueError(f"{len(partitions)=} does not match {pp_size=}.")
-        if sum(partitions) != num_hidden_layers:
-            raise ValueError(f"{sum(partitions)=} does not match {num_hidden_layers=}.")
-        start_layer = sum(partitions[:pp_rank])
-        end_layer = start_layer + partitions[pp_rank]
-        return (start_layer, end_layer)
 
 
 def get_parallel_device_index(
@@ -1846,6 +1672,7 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
     def __init__(self, vllm_config: VllmConfig, engine_id: str, kv_cache_config: KVCacheConfig):
         super().__init__(vllm_config, engine_id, kv_cache_config)
         self.remote_local_block_map: dict[str, dict[tuple[int, ...], int]] = {}
+        self.d2rh_thread: D2RHThread | None = None
 
     def _make_cpu_staging_caches(self, kv_caches: dict[str, torch.Tensor]) -> dict[str, list[torch.Tensor]]:
         """Allocate CPU staging buffers with 2M-aligned sizes for UBMem 2M-page mode.
@@ -1883,272 +1710,80 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
                 self._cpu_register_lengths.append(aligned_size)
         return cpu_caches
 
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
-        self.use_mla = self.vllm_config.model_config.is_deepseek_mla
-        self.use_sparse = hasattr(self.vllm_config.model_config.hf_text_config, "index_topk")
-        self.enable_sfa_dcp_replicated_indexer = enable_sfa_dcp_replicated_indexer(self.vllm_config)
-        self.num_blocks = self.kv_cache_config.num_blocks
-        self.kv_caches = kv_caches
-        self.kv_group2layeridx = self._build_kv_group2layeridx()
-        self._is_hma_required = self._is_hma_required or self._requires_group_aware_attention_transfer()
-        has_mamba_group = self._has_mamba_group()
-        layer_name_to_idx = {
-            layer_name: layer_idx
-            for _, (group_spec, layer_indices) in self.kv_group2layeridx.items()
-            for layer_name, layer_idx in zip(group_spec["layer_names"], layer_indices)
-        }
-        metadata_layers = max(layer_name_to_idx.values(), default=-1) + 1
-        self.kv_caches_base_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-        self.block_size_scale: list[list[int]] = [[] for _ in range(metadata_layers)]
-        self.block_len_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-        self.block_shape_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-        self.block_stride_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-
+    def _get_register_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
+        register_regions = super()._get_register_regions(kv_caches)
+        # V1 has already flattened the HBM tensors. Record which slots belong
+        # to each named cache, including distinct components of one PP layer.
+        next_slot: dict[int, int] = defaultdict(int)
         layer_cache_indices: dict[str, list[int]] = {}
-        for layer_name, kv_cache_tuple in kv_caches.items():
-            layer_idx = layer_name_to_idx[layer_name]
-            layer_cache_indices[layer_name] = []
-            for single_kv_cache in self._as_kv_cache_tuple(kv_cache_tuple):
-                layer_cache_indices[layer_name].append(len(self.kv_caches_base_addr[layer_idx]))
-                tensor_num_blocks = single_kv_cache.shape[0]
-                block_size_scale = tensor_num_blocks // self.num_blocks
-                block_shape = single_kv_cache.shape[1:]
-                self.block_len_per_addr[layer_idx].append(single_kv_cache.element_size() * math.prod(block_shape))
-                self.block_stride_per_addr[layer_idx].append(single_kv_cache.stride(0) * single_kv_cache.element_size())
-                self.block_shape_per_addr[layer_idx].append(single_kv_cache.shape)
-                self.block_size_scale[layer_idx].append(block_size_scale)
-                self.kv_caches_base_addr[layer_idx].append(single_kv_cache.data_ptr())
-
+        layer_name_to_idx = build_layer_name_to_metadata_idx(self.kv_group2layeridx)
+        for name, caches in kv_caches.items():
+            layer_idx = layer_name_to_idx[name]
+            start = next_slot[layer_idx]
+            end = start + len(self._as_kv_cache_tuple(caches))
+            layer_cache_indices[name] = list(range(start, end))
+            next_slot[layer_idx] = end
         for group_spec, _ in self.kv_group2layeridx.values():
             group_spec["layer_cache_indices"] = {name: layer_cache_indices[name] for name in group_spec["layer_names"]}
-
-        if has_mamba_group:
-            ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)
-            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
-        elif self.use_hybrid:
-            ptrs, lengths = self._get_registered_kv_tensor_buffers_hybrid(kv_caches)
-            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
-        else:
-            register_regions = collect_storage_merged_register_regions(kv_caches)
-
-        cpu_kv_caches_base_addr: list[list[int]] = []
-        cpu_block_len_per_addr: list[list[int]] = []
-        cpu_block_stride_per_addr: list[list[int]] = []
-        cpu_block_size_scale: list[list[int]] = []
-        cpu_kvcache_manager: D2RHCPUCacheManager | None = None
-        self.d2rh_thread: D2RHThread | None = None
 
         if self.kv_role == "kv_consumer":
             enable_host_cache = bool(
                 self.vllm_config.kv_transfer_config.get_from_extra_config("d2rh_enable_host_cache", False)
             )
-            cpu_kvcache_manager = D2RHCPUCacheManager(
-                self.num_blocks,
-                enable_host_cache=enable_host_cache,
-            )
-            logger.info(
-                "D2RH host content cache enabled=%s capacity_blocks=%d",
-                enable_host_cache,
-                self.num_blocks,
-            )
+            self.cpu_kvcache_manager = D2RHCPUCacheManager(self.num_blocks, enable_host_cache=enable_host_cache)
+            logger.info("D2RH host content cache enabled=%s capacity_blocks=%d", enable_host_cache, self.num_blocks)
             cpu_caches = self._make_cpu_staging_caches(kv_caches)
-            cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
-            cpu_block_len_per_addr = [[] for _ in range(metadata_layers)]
-            cpu_block_stride_per_addr = [[] for _ in range(metadata_layers)]
-            cpu_block_size_scale = [[] for _ in range(metadata_layers)]
-            for layer_name, cpu_cache_tuple in cpu_caches.items():
-                layer_idx = layer_name_to_idx[layer_name]
-                for single_cpu_cache in cpu_cache_tuple:
-                    tensor_num_blocks = single_cpu_cache.shape[0]
-                    block_shape = single_cpu_cache.shape[1:]
-                    block_len = single_cpu_cache.element_size() * math.prod(block_shape)
-                    cpu_kv_caches_base_addr[layer_idx].append(single_cpu_cache.data_ptr())
-                    cpu_block_len_per_addr[layer_idx].append(block_len)
-                    cpu_block_stride_per_addr[layer_idx].append(
-                        single_cpu_cache.stride(0) * single_cpu_cache.element_size()
-                    )
-                    cpu_block_size_scale[layer_idx].append(tensor_num_blocks // self.num_blocks)
-            # CPU staging caches are freshly allocated independent tensors with
-            # 2M-aligned storage.  Register the full 2M-aligned regions directly
-            # (collected in _make_cpu_staging_caches) so that UBMem uses 2M huge
-            # pages instead of falling back to 4K small pages.
-            # cpu_register_regions = collect_storage_merged_register_regions(cpu_caches)
+            metadata_layers = len(self.kv_caches_base_addr)
+            self.cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_len_per_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_stride_per_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_size_scale = [[] for _ in range(metadata_layers)]
+            for name, caches in cpu_caches.items():
+                layer_idx = layer_name_to_idx[name]
+                for cache in caches:
+                    self.cpu_kv_caches_base_addr[layer_idx].append(cache.data_ptr())
+                    self.cpu_block_len_per_addr[layer_idx].append(cache.element_size() * math.prod(cache.shape[1:]))
+                    self.cpu_block_stride_per_addr[layer_idx].append(cache.stride(0) * cache.element_size())
+                    self.cpu_block_size_scale[layer_idx].append(cache.shape[0] // self.num_blocks)
+            # Register the owning 2M-aligned buffers, not just their tensor views.
             register_regions.ptrs.extend(self._cpu_register_ptrs)
             register_regions.lengths.extend(self._cpu_register_lengths)
+        return register_regions
 
-        validate_register_region_count(register_regions)
-        global_te.register_buffer(register_regions.ptrs, register_regions.lengths)
-
-        metadata = MooncakeAgentMetadata(
-            engine_id=self.engine_id,
-            handshake_port=self.handshake_port,
-            te_rpc_port=self.te_rpc_port,
-            kv_group2layeridx=self.kv_group2layeridx,
-            block_size=self.block_size,
-            kv_caches_base_addr=self.kv_caches_base_addr,
-            block_size_scale=self.block_size_scale,
-            num_blocks=self.num_blocks,
-            block_lens=self.block_len_per_addr,
-            block_strides=self.block_stride_per_addr,
-            local_ip=get_ip(),
+    def _create_recv_thread(self, ready_event: threading.Event) -> KVCacheRecvingThread:
+        cpu_metadata = dict(
+            cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
+            cpu_block_len_per_addr=self.cpu_block_len_per_addr,
+            cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
+            cpu_block_size_scale=self.cpu_block_size_scale,
+            cpu_kvcache_manager=self.cpu_kvcache_manager,
+            remote_local_block_map=self.remote_local_block_map,
         )
-        self.xfer_handshake_metadata = metadata
-
-        ready_event = threading.Event()
-        if self.kv_role == "kv_producer":
-            self.kv_send_thread = KVCacheSendingThread(
-                self.vllm_config,
-                self.tp_rank,
-                self._prefill_tp_size,
-                self.engine_id,
-                self.side_channel_host,
-                self.side_channel_port,
-                metadata,
-                ready_event,
-                self.kv_caches,
-                self.pcp_rank,
-            )
-            self.kv_send_thread.start()
-        else:
-            assert cpu_kvcache_manager is not None
-            d2rh_port = get_d2rh_zmq_port(self.vllm_config, self.tp_rank, self.pp_rank, self.pcp_rank)
-            scheduler_ready_port = get_scheduler_ready_zmq_port(self.vllm_config)
-            self.d2rh_thread = D2RHThread(
-                cpu_kv_caches_base_addr=cpu_kv_caches_base_addr,
-                cpu_block_len_per_addr=cpu_block_len_per_addr,
-                cpu_block_stride_per_addr=cpu_block_stride_per_addr,
-                cpu_block_size_scale=cpu_block_size_scale,
-                kv_group2layeridx=self.kv_group2layeridx,
-                engine=self.engine,
-                cpu_kvcache_manager=cpu_kvcache_manager,
-                remote_local_block_map=self.remote_local_block_map,
-                vllm_config=self.vllm_config,
-                d2rh_handshake_port=d2rh_port,
-                scheduler_ready_port=scheduler_ready_port,
-                tp_rank=self.tp_rank,
-            )
-            self.d2rh_thread.start()
-            self.kv_recv_thread = KVCacheRecvingThread(
-                self.tp_rank,
-                self.tp_size,
-                self._prefill_pp_size,
-                self.engine,
-                self.engine_id,
-                self.handshake_port,
-                self.side_channel_port,
-                self.kv_caches_base_addr,
-                self.block_len_per_addr,
-                self.block_stride_per_addr,
-                self._is_hma_required,
-                ready_event,
-                self.vllm_config,
-                self.kv_caches,
-                self._prefill_pp_layer_partition,
-                self.kv_group2layeridx,
-                self.block_size_scale,
-                cpu_kv_caches_base_addr=cpu_kv_caches_base_addr,
-                cpu_block_len_per_addr=cpu_block_len_per_addr,
-                cpu_block_stride_per_addr=cpu_block_stride_per_addr,
-                cpu_block_size_scale=cpu_block_size_scale,
-                cpu_te_rpc_port=self.te_rpc_port,
-                cpu_kvcache_manager=cpu_kvcache_manager,
-                remote_local_block_map=self.remote_local_block_map,
-            )
-            self.kv_recv_thread.start()
-
-        start_wait_time = time.time()
-        thread = self.kv_send_thread if self.kv_role == "kv_producer" else self.kv_recv_thread
-        assert thread is not None
-        while not ready_event.is_set():
-            if not thread.is_alive():
-                raise RuntimeError("KV Cache sending/receiving thread failed to start.")
-            if time.time() - start_wait_time > 5 * 60:
-                raise RuntimeError("Timeout waiting for KV Cache thread to be ready.")
-            time.sleep(3)
+        self.d2rh_thread = D2RHThread(
+            **cpu_metadata,
+            kv_group2layeridx=self.kv_group2layeridx,
+            engine=self.engine,
+            vllm_config=self.vllm_config,
+            d2rh_handshake_port=get_d2rh_zmq_port(self.vllm_config, self.tp_rank, self.pp_rank, self.pcp_rank),
+            scheduler_ready_port=get_scheduler_ready_zmq_port(self.vllm_config),
+            tp_rank=self.tp_rank,
+        )
+        self.d2rh_thread.start()
+        return super()._create_recv_thread(
+            ready_event, receiver_cls=KVCacheRecvingThread, **cpu_metadata, cpu_te_rpc_port=self.te_rpc_port
+        )
 
 
-class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
-    def __init__(self, vllm_config: VllmConfig, role: KVConnectorRole, kv_cache_config: KVCacheConfig | None = None):
-        assert vllm_config.kv_transfer_config is not None
+class MooncakeConnector(BaseMooncakeConnector):
+    """V1 connector interface with D Host staging scheduler/worker extensions."""
+
+    def _create_scheduler(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
         assert kv_cache_config is not None
-        self._kv_transfer_config = vllm_config.kv_transfer_config
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
-        self._connector_metadata = MooncakeConnectorMetadata()
+        return MooncakeConnectorScheduler(vllm_config, str(self.engine_id), kv_cache_config)
 
-        if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
-                vllm_config, str(self.engine_id), kv_cache_config
-            )
-            self.connector_worker: MooncakeConnectorWorker | None = None
-        elif role == KVConnectorRole.WORKER:
-            self.connector_scheduler = None
-            self.connector_worker = MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
-
-    def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int, bool]:
-        assert self.connector_scheduler is not None
-        return self.connector_scheduler.get_num_new_matched_tokens(request, num_computed_tokens)
-
-    def update_state_after_alloc(self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int):
-        assert self.connector_scheduler is not None
-        return self.connector_scheduler.update_state_after_alloc(request, blocks, num_external_tokens)
-
-    def build_connector_meta(self, scheduler_output: SchedulerOutput) -> KVConnectorMetadata:
-        assert self.connector_scheduler is not None
-        return self.connector_scheduler.build_connector_meta(scheduler_output)
-
-    def request_finished(self, request: "Request", block_ids: list[int]) -> tuple[bool, dict[str, Any] | None]:
-        assert self.connector_scheduler is not None
-        return self.connector_scheduler.request_finished(request, (block_ids,))
-
-    def request_finished_all_groups(
-        self, request: "Request", block_ids: tuple[list[int], ...]
-    ) -> tuple[bool, dict[str, Any] | None]:
-        assert self.connector_scheduler is not None
-        return self.connector_scheduler.request_finished(request, block_ids)
-
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
-        assert self.connector_worker is not None
-        self.connector_worker.register_kv_caches(kv_caches)
-
-    def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str], set[str]]:
-        assert self.connector_worker is not None
-        return self.connector_worker.get_finished()
-
-    def get_block_ids_with_load_errors(self) -> set[int]:
-        assert self.connector_worker is not None
-        return self.connector_worker.get_block_ids_with_load_errors()
-
-    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        assert self.connector_worker is not None
-        assert isinstance(self._connector_metadata, MooncakeConnectorMetadata)
-        self.connector_worker.start_load_kv(self._connector_metadata)
-
-    def wait_for_layer_load(self, layer_name: str) -> None:
-        pass
-
-    def save_kv_layer(
-        self, layer_name: str, kv_layer: torch.Tensor, attn_metadata: "AttentionMetadata", **kwargs
-    ) -> None:
-        pass
-
-    def wait_for_save(self) -> None:
-        pass
-
-    def get_handshake_metadata(self) -> KVConnectorHandshakeMetadata | None:
-        assert self.connector_worker is not None
-        return self.connector_worker.xfer_handshake_metadata
-
-    def set_xfer_handshake_metadata(
-        self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]
-    ) -> None:
-        assert self.connector_scheduler is not None
-        self.connector_scheduler.set_xfer_handshake_metadata(metadata)
-
-    def set_xfer_handshake_metadata_pp_aware(
-        self, metadata: Mapping[int | tuple[int, ...], KVConnectorHandshakeMetadata]
-    ) -> None:
-        assert self.connector_scheduler is not None
-        self.connector_scheduler.set_xfer_handshake_metadata_from_workers(metadata)
+    def _create_worker(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
+        assert kv_cache_config is not None
+        return MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
 
 
 # External connector loading resolves the class by the configured connector
