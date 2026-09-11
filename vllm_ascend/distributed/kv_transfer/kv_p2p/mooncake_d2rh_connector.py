@@ -41,6 +41,10 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     MooncakeAgentMetadata,
     MooncakeConnectorMetadata,
     SizedDict,
+    build_layer_name_to_cache_slots,
+    build_layer_name_to_metadata_idx,
+    resolve_group_cache_slot_pairs,
+    resolve_remote_layer_idx,
     split_if_not_byte_contiguous,
 )
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
@@ -1027,6 +1031,35 @@ class D2RHThread(threading.Thread):
                 self.cpu_kvcache_manager.free_block_map(block_map)
             raise
 
+    def _get_hop1_layer_pairs(
+        self,
+        group_spec: dict[str, Any],
+        layer_indices: list[int],
+        remote_layer_name_to_idx: dict[str, int],
+    ) -> list[tuple[int, int]]:
+        """Map D host layers to the layers actually registered by this P stage.
+
+        The handshake is authoritative for PP ownership, including custom
+        partitions, index-cache planes, and draft layers. Metadata indices are
+        not necessarily identical between P and D.
+        """
+        prefill = self.vllm_config.kv_transfer_config.get_from_extra_config("prefill", {})
+        pp_size = prefill.get("pp_size", 1)
+        layer_names = group_spec.get("layer_names", [])
+        if not remote_layer_name_to_idx or not layer_names:
+            if pp_size > 1:
+                raise RuntimeError("D2RH prefill PP requires cache layer names in the handshake metadata.")
+            return [(idx, idx) for idx in layer_indices]
+        if len(layer_names) != len(layer_indices):
+            raise RuntimeError("D2RH local cache layer names and indices are misaligned.")
+        pairs = []
+        for layer_name, layer_idx in zip(layer_names, layer_indices):
+            if pp_size > 1 and layer_name not in remote_layer_name_to_idx:
+                continue
+            remote_idx = resolve_remote_layer_idx(layer_idx, group_spec, layer_indices, remote_layer_name_to_idx)
+            pairs.append((layer_idx, remote_idx))
+        return pairs
+
     def _transfer_kv_cache_all_groups(self, req_meta: dict[str, Any]) -> None:
         remote_request_id = req_meta["remote_request_id"]
         remote_engine_id = req_meta["remote_engine_id"]
@@ -1047,6 +1080,52 @@ class D2RHThread(threading.Thread):
         if not any(remote_block_ids):
             return
 
+        # Validate the complete PP plan before any transfer/producer release.
+        # A host-cache entry may only become valid after every stage is present.
+        layer_pairs_by_port: dict[int, dict[int, list[tuple[int, int]]]] = {}
+        covered_layers: dict[tuple[int, int], set[int]] = defaultdict(set)
+        for handshake_port, pulls in zip(remote_handshake_ports, group_pulls_by_port):
+            host, engine_id = resolve_remote_host_for_handshake_port(
+                remote_port,
+                handshake_port,
+                remote_host,
+                remote_engine_id,
+                remote_multi_nodes_meta_mapping,
+            )
+            with self.remote_metadata_lock:
+                if (
+                    engine_id not in self.kv_caches_base_addr
+                    or handshake_port not in self.kv_caches_base_addr[engine_id]
+                ):
+                    self._get_remote_metadata(host, handshake_port)
+            remote_groups = self.remote_kv_group2layeridx[engine_id][handshake_port]
+            remote_names = build_layer_name_to_metadata_idx(remote_groups)
+            remote_slots = build_layer_name_to_cache_slots(remote_groups)
+            port_pairs = layer_pairs_by_port.setdefault(handshake_port, {})
+            for pull in pulls:
+                group_id = _get_group_pull_field(pull, "group_id")
+                offset = _get_group_pull_field(pull, "remote_tp_offset")
+                spec, indices = self.kv_group2layeridx[group_id]
+                pairs = self._get_hop1_layer_pairs(spec, indices, remote_names)
+                for local_idx, remote_idx in pairs:
+                    resolve_group_cache_slot_pairs(
+                        spec,
+                        indices,
+                        local_idx,
+                        remote_slots,
+                        len(self.cpu_kv_caches_base_addr[local_idx]),
+                        len(self.kv_caches_base_addr[engine_id][handshake_port][remote_idx]),
+                    )
+                port_pairs[group_id] = pairs
+                covered_layers[group_id, offset].update(idx for idx, _ in pairs)
+        for (group_id, offset), covered in covered_layers.items():
+            missing = set(self.kv_group2layeridx[group_id][1]) - covered
+            if remote_block_ids[group_id] and missing:
+                raise RuntimeError(
+                    f"Incomplete D2RH PP layer coverage: group={group_id}, "
+                    f"tp_offset={offset}, missing={sorted(missing)}"
+                )
+
         for remote_handshake_port, group_pulls in zip(remote_handshake_ports, group_pulls_by_port):
             port_host, port_engine_id = resolve_remote_host_for_handshake_port(
                 remote_port,
@@ -1063,6 +1142,9 @@ class D2RHThread(threading.Thread):
                     self._get_remote_metadata(port_host, remote_handshake_port)
 
             remote_base_addrs = self.kv_caches_base_addr[port_engine_id][remote_handshake_port]
+            remote_cache_slots = build_layer_name_to_cache_slots(
+                self.remote_kv_group2layeridx[port_engine_id][remote_handshake_port]
+            )
             remote_block_size_scale = self.remote_block_size_scale[port_engine_id][remote_handshake_port]
             remote_block_stride_per_addr = self.remote_block_stride_per_addr[port_engine_id][remote_handshake_port]
             session_id = f"{port_host}:{self.remote_te_port[port_engine_id][remote_handshake_port]}"
@@ -1076,6 +1158,9 @@ class D2RHThread(threading.Thread):
             for group_pull in group_pulls:
                 group_id = _get_group_pull_field(group_pull, "group_id")
                 group_spec, layer_indices = self.kv_group2layeridx[group_id]
+                layer_pairs = layer_pairs_by_port[remote_handshake_port][group_id]
+                if not layer_pairs:
+                    continue
                 num_group_pulls = _get_group_pull_field(group_pull, "num_group_pulls")
                 remote_tp_offset = _get_group_pull_field(group_pull, "remote_tp_offset")
                 local_group_block_ids: list[int] = []
@@ -1119,8 +1204,9 @@ class D2RHThread(threading.Thread):
                     grouped_remote_block_ids = [[remote_group_block_ids[-1]]]
                     grouped_local_block_ids = [[local_group_block_ids[0]]]
                 else:
-                    local_scale = self.cpu_block_size_scale[layer_indices[0]][0]
-                    remote_scale = remote_block_size_scale[layer_indices[0]][0]
+                    first_local_idx, first_remote_idx = layer_pairs[0]
+                    local_scale = self.cpu_block_size_scale[first_local_idx][0]
+                    remote_scale = remote_block_size_scale[first_remote_idx][0]
                     kernel_local_block_ids = expand_block_ids(local_group_block_ids, local_scale)
                     kernel_remote_block_ids = expand_block_ids(remote_group_block_ids, remote_scale)
                     # Absolute HBM-prefix slicing was already applied to both
@@ -1139,13 +1225,21 @@ class D2RHThread(threading.Thread):
                         grouped_remote_block_ids = [[block_id] for block_id in kernel_remote_block_ids]
                         grouped_local_block_ids = [[block_id] for block_id in kernel_local_block_ids]
 
-                for layer_idx in layer_indices:
-                    for cache_idx in range(len(self.cpu_kv_caches_base_addr[layer_idx])):
+                for layer_idx, remote_layer_idx in layer_pairs:
+                    cache_pairs = resolve_group_cache_slot_pairs(
+                        group_spec,
+                        layer_indices,
+                        layer_idx,
+                        remote_cache_slots,
+                        len(self.cpu_kv_caches_base_addr[layer_idx]),
+                        len(remote_base_addrs[remote_layer_idx]),
+                    )
+                    for cache_idx, remote_cache_idx in cache_pairs:
                         src_layer_base_addr = self.cpu_kv_caches_base_addr[layer_idx][cache_idx]
-                        dst_layer_base_addr = remote_base_addrs[layer_idx][cache_idx]
+                        dst_layer_base_addr = remote_base_addrs[remote_layer_idx][remote_cache_idx]
                         block_len = self.cpu_block_len_per_addr[layer_idx][cache_idx]
                         block_stride = self.cpu_block_stride_per_addr[layer_idx][cache_idx]
-                        remote_block_stride = remote_block_stride_per_addr[layer_idx][cache_idx]
+                        remote_block_stride = remote_block_stride_per_addr[remote_layer_idx][remote_cache_idx]
                         inner_block_len = block_len // num_group_pulls
                         transfer_remote_block_ids, transfer_local_block_ids = split_if_not_byte_contiguous(
                             grouped_remote_block_ids,
@@ -1283,6 +1377,7 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
         self.cpu_te_rpc_port = cpu_te_rpc_port
         self.cpu_kvcache_manager = cpu_kvcache_manager
         self.remote_local_block_map = remote_local_block_map
+        self._h2d_remote_request_ids: dict[str, str] = {}
         self.log_full_block_map = bool(
             self.vllm_config.kv_transfer_config.get_from_extra_config("d2rh_log_full_block_map", True)
         )
@@ -1334,16 +1429,24 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
         super()._transfer_kv_cache_all_groups(cpu_req_meta)
 
     def _handle_request(self, req_meta: dict[str, Any]) -> None:
-        try:
-            super()._handle_request(req_meta)
-        finally:
-            if req_meta.get("all_task_done"):
-                request_id = req_meta["request_id"]
-                remote_request_id = req_meta["remote_request_id"]
-                block_map = self.remote_local_block_map.pop(remote_request_id, None)
-                self.remote_local_block_map.pop(request_id, None)
-                if block_map:
-                    self.cpu_kvcache_manager.free_block_map(block_map)
+        self._h2d_remote_request_ids[req_meta["request_id"]] = req_meta["remote_request_id"]
+        super()._handle_request(req_meta)
+
+    def _mark_request_task_done(self, request_id: str, all_task_done: bool) -> bool:
+        # all_task_done marks the last SUBMITTED shard, not the last completed
+        # transfer. Different PP peers run concurrently and may finish out of
+        # order. Keep Host blocks pinned until the base completion counter says
+        # every H2D read has returned, including on a failed-transfer path.
+        completed = super()._mark_request_task_done(request_id, all_task_done)
+        if completed:
+            remote_request_id = self._h2d_remote_request_ids.pop(request_id, request_id)
+            block_map = self.remote_local_block_map.pop(remote_request_id, None)
+            local_block_map = self.remote_local_block_map.pop(request_id, None)
+            if block_map is None:
+                block_map = local_block_map
+            if block_map:
+                self.cpu_kvcache_manager.free_block_map(block_map)
+        return completed
 
 
 class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
@@ -1801,9 +1904,12 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         self.block_shape_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
         self.block_stride_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
 
+        layer_cache_indices: dict[str, list[int]] = {}
         for layer_name, kv_cache_tuple in kv_caches.items():
             layer_idx = layer_name_to_idx[layer_name]
+            layer_cache_indices[layer_name] = []
             for single_kv_cache in self._as_kv_cache_tuple(kv_cache_tuple):
+                layer_cache_indices[layer_name].append(len(self.kv_caches_base_addr[layer_idx]))
                 tensor_num_blocks = single_kv_cache.shape[0]
                 block_size_scale = tensor_num_blocks // self.num_blocks
                 block_shape = single_kv_cache.shape[1:]
@@ -1812,6 +1918,9 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
                 self.block_shape_per_addr[layer_idx].append(single_kv_cache.shape)
                 self.block_size_scale[layer_idx].append(block_size_scale)
                 self.kv_caches_base_addr[layer_idx].append(single_kv_cache.data_ptr())
+
+        for group_spec, _ in self.kv_group2layeridx.values():
+            group_spec["layer_cache_indices"] = {name: layer_cache_indices[name] for name in group_spec["layer_names"]}
 
         if has_mamba_group:
             ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)

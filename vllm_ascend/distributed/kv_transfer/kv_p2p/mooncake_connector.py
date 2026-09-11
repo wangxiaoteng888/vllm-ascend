@@ -820,6 +820,7 @@ class KVCacheRecvingThread(threading.Thread):
                 self.kv_group2layeridx,
             )
         remote_layer_name_to_idx = build_layer_name_to_metadata_idx(remote_kv_group2layeridx)
+        remote_cache_slots = build_layer_name_to_cache_slots(remote_kv_group2layeridx)
         session_id = f"{remote_host}:{remote_transfer_port}"
 
         req_start_time = time.perf_counter()
@@ -986,12 +987,20 @@ class KVCacheRecvingThread(threading.Thread):
                     group_spec,
                     raw_layer_indices,
                 )
-                for cache_idx in range(len(local_kv_caches_base_addrs[layer_idx])):
+                cache_pairs = resolve_group_cache_slot_pairs(
+                    group_spec,
+                    raw_layer_indices,
+                    layer_idx,
+                    remote_cache_slots,
+                    len(local_kv_caches_base_addrs[layer_idx]),
+                    len(remote_kv_caches_base_addrs[remote_layer_idx]),
+                )
+                for cache_idx, remote_cache_idx in cache_pairs:
                     src_layer_base_addr = local_kv_caches_base_addrs[layer_idx][cache_idx]
-                    dst_layer_base_addr = remote_kv_caches_base_addrs[remote_layer_idx][cache_idx]
+                    dst_layer_base_addr = remote_kv_caches_base_addrs[remote_layer_idx][remote_cache_idx]
                     block_len = self.block_len_per_addr[layer_idx][cache_idx]
                     block_stride = self.block_stride_per_addr[layer_idx][cache_idx]
-                    remote_block_stride = remote_block_stride_per_addr[remote_layer_idx][cache_idx]
+                    remote_block_stride = remote_block_stride_per_addr[remote_layer_idx][remote_cache_idx]
                     inner_block_len = block_len // tp_num_need_pulls
                     is_sfa_indexer_group = group_spec["kv_cache_spec_type"] == "AscendSFAIndexerCacheSpec"
                     if is_sfa_indexer_group and has_replicate_k_blocks:
@@ -4078,6 +4087,60 @@ def build_layer_name_to_metadata_idx(
         for layer_name, layer_idx in zip(layer_names, layer_indices):
             layer_name_to_idx[layer_name] = layer_idx
     return layer_name_to_idx
+
+
+def build_layer_name_to_cache_slots(
+    kv_group2layeridx: dict[int, tuple[dict[str, Any], list[int]]],
+) -> dict[str, list[int]]:
+    result: dict[str, list[int]] = {}
+    for group_spec, _ in kv_group2layeridx.values():
+        for name, slots in group_spec.get("layer_cache_indices", {}).items():
+            if name in result and result[name] != slots:
+                raise RuntimeError(f"Conflicting KV component metadata for {name!r}")
+            result[name] = slots
+    return result
+
+
+def resolve_group_cache_slot_pairs(
+    group_spec: dict[str, Any],
+    layer_indices: list[int],
+    layer_idx: int,
+    remote_cache_slots: dict[str, list[int]],
+    local_count: int,
+    remote_count: int,
+) -> list[tuple[int, int]]:
+    """Select only cache components owned by this KV group, by stable names.
+
+    A transformer layer can own compressed attention, SWA and compressor state
+    in different groups. Their physical buffers can alias OTHER layers, with
+    a different alias layout after PP partitioning. Copying all components for
+    each group can therefore overwrite valid KV with another layer's bytes.
+    """
+    local_slots = group_spec.get("layer_cache_indices")
+    if local_slots is None:
+        if local_count != remote_count:
+            raise RuntimeError("Legacy KV component counts differ between peers")
+        return [(index, index) for index in range(local_count)]
+    names = group_spec.get("layer_names", [])
+    if len(names) != len(layer_indices):
+        raise RuntimeError("Misaligned KV component layer metadata")
+    result: list[tuple[int, int]] = []
+    for name, index in zip(names, layer_indices):
+        if index != layer_idx:
+            continue
+        local = local_slots.get(name)
+        remote = remote_cache_slots.get(name)
+        if local is None or remote is None or len(local) != len(remote):
+            raise RuntimeError(f"Missing or incompatible KV component metadata for {name!r}")
+        for local_idx, remote_idx in zip(local, remote):
+            if not (0 <= local_idx < local_count and 0 <= remote_idx < remote_count):
+                raise RuntimeError(f"Out-of-range KV component metadata for {name!r}")
+            pair = (local_idx, remote_idx)
+            if pair not in result:
+                result.append(pair)
+    if not result:
+        raise RuntimeError(f"KV group owns no components for metadata layer {layer_idx}")
+    return result
 
 
 def resolve_remote_layer_idx(
