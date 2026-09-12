@@ -1422,8 +1422,11 @@ class NPUModelRunner(GPUModelRunner):
         # valid_sampled_token_count_gpu. Otherwise, just copy from CPU.
         valid_sampled_token_count_gpu = self.valid_sampled_token_count_gpu
         if self.use_async_spec_decode:
-            computed_token_tensor_cpu = self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs].to(
-                device=self.device, non_blocking=True
+            computed_token_tensor_cpu = (
+                self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs]
+                .clone()
+                .pin_memory()
+                .to(device=self.device, non_blocking=True)
             )
         if (
             self.use_async_spec_decode
@@ -1443,7 +1446,7 @@ class NPUModelRunner(GPUModelRunner):
             )
         else:
             self.num_computed_tokens[:num_reqs].copy_(
-                self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs],
+                self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs].clone().pin_memory(),
                 non_blocking=True,
             )
 
