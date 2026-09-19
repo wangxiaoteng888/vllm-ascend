@@ -1674,44 +1674,93 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         self.remote_local_block_map: dict[str, dict[tuple[int, ...], int]] = {}
         self.d2rh_thread: D2RHThread | None = None
 
+    @staticmethod
+    def _tensor_span_end(tensor: torch.Tensor) -> int:
+        """Return the exclusive end address of a possibly-strided tensor."""
+        if tensor.numel() == 0:
+            return tensor.data_ptr()
+        span = tensor.element_size()
+        for size, stride in zip(tensor.shape, tensor.stride()):
+            span += (size - 1) * abs(stride) * tensor.element_size()
+        return tensor.data_ptr() + span
+
+    def _get_storage_merged_device_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
+        """Register each device backing storage once, while retaining logical views."""
+        regions_by_storage: OrderedDict[int, tuple[int, int]] = OrderedDict()
+        logical_tensor_count = 0
+        logical_total_bytes = 0
+        for kv_cache_tuple in kv_caches.values():
+            for cache in self._as_kv_cache_tuple(kv_cache_tuple):
+                if cache.numel() == 0:
+                    continue
+                storage = cache.untyped_storage()
+                storage_base = storage.data_ptr()
+                storage_end = storage_base + storage.nbytes()
+                aligned_base = (storage_base + HUGEPAGE_SIZE_2M - 1) // HUGEPAGE_SIZE_2M * HUGEPAGE_SIZE_2M
+                # NPU KV allocations have padding before their first aligned
+                # view. Tiny CPU tensors used by unit tests do not.
+                region_start = aligned_base if aligned_base <= cache.data_ptr() else cache.data_ptr()
+                tensor_end = self._tensor_span_end(cache)
+                if not (storage_base <= region_start <= cache.data_ptr() and tensor_end <= storage_end):
+                    raise RuntimeError(
+                        "Unable to recover one device KV registration region: "
+                        f"tensor=[{cache.data_ptr()}, {tensor_end}), "
+                        f"storage=[{storage_base}, {storage_end})."
+                    )
+                previous = regions_by_storage.get(storage_base)
+                if previous is None:
+                    regions_by_storage[storage_base] = (region_start, tensor_end)
+                else:
+                    regions_by_storage[storage_base] = (min(previous[0], region_start), max(previous[1], tensor_end))
+                logical_tensor_count += 1
+                logical_total_bytes += cache.nbytes
+
+        return RegisterRegions(
+            ptrs=[start for start, _ in regions_by_storage.values()],
+            lengths=[end - start for start, end in regions_by_storage.values()],
+            logical_tensor_count=logical_tensor_count,
+            logical_total_bytes=logical_total_bytes,
+        )
+
     def _make_cpu_staging_caches(self, kv_caches: dict[str, torch.Tensor]) -> dict[str, list[torch.Tensor]]:
-        """Allocate CPU staging buffers with 2M-aligned sizes for UBMem 2M-page mode.
-        For each KV cache tensor, a flat pinned buffer whose byte size is rounded
-        up to a 2M boundary is allocated via ``torch.empty(..., pin_memory=True)``
-        (which internally calls ``aclrtMallocHost``).  A view with the original
-        shape/dtype is created from the first ``num_blocks`` blocks; the tail
-        padding is never accessed by block addressing.
-        The flat buffer (owning the 2M-aligned storage) is kept in
-        ``self.cpu_caches_hold`` for GC; the view is returned in *cpu_caches*
-        for metadata extraction.  Registration info ``(ptr, aligned_size)`` is
-        collected in ``self._cpu_register_ptrs`` / ``self._cpu_register_lengths``
-        so that ``register_buffer`` sees the full 2M-aligned region.
-        """
+        """Create all CPU staging tensors inside one 2 MiB-aligned pinned arena."""
         cpu_caches: dict[str, list[torch.Tensor]] = {}
-        self.cpu_caches_hold: list[torch.Tensor] = []
-        self._cpu_register_ptrs: list[int] = []
-        self._cpu_register_lengths: list[int] = []
+        cache_layout: list[tuple[str, torch.Tensor, int, int]] = []
+        arena_size = 0
         for layer_name, kv_cache_tuple in kv_caches.items():
             cpu_caches[layer_name] = []
             for cache in self._as_kv_cache_tuple(kv_cache_tuple):
                 raw_size = cache.numel() * cache.element_size()
                 aligned_size = ((raw_size + HUGEPAGE_SIZE_2M - 1) // HUGEPAGE_SIZE_2M) * HUGEPAGE_SIZE_2M
-                # Allocate flat pinned buffer with 2M-aligned byte size.
-                # Use the original dtype so element count = aligned_size / element_size.
-                aligned_num_elements = aligned_size // cache.element_size()
-                flat = torch.empty(aligned_num_elements, dtype=cache.dtype, device="cpu", pin_memory=True)
-                # Create a view with the original shape (first num_blocks blocks).
-                cpu_cache = flat[: cache.numel()].view(cache.shape)
-                # Keep the flat buffer alive — it owns the 2M-aligned storage.
-                self.cpu_caches_hold.append(flat)
-                cpu_caches[layer_name].append(cpu_cache)
-                # Record 2M-aligned registration info.
-                self._cpu_register_ptrs.append(flat.data_ptr())
-                self._cpu_register_lengths.append(aligned_size)
+                cache_layout.append((layer_name, cache, arena_size, raw_size))
+                arena_size += aligned_size
+
+        self._cpu_register_ptrs = []
+        self._cpu_register_lengths = []
+        if arena_size == 0:
+            self.cpu_caches_hold = []
+            return cpu_caches
+
+        arena_owner = torch.empty(
+            arena_size + HUGEPAGE_SIZE_2M - 1,
+            dtype=torch.uint8,
+            device="cpu",
+            pin_memory=True,
+        )
+        alignment_offset = (-arena_owner.data_ptr()) % HUGEPAGE_SIZE_2M
+        arena = arena_owner.narrow(0, alignment_offset, arena_size)
+        self.cpu_caches_hold = [arena_owner]
+        self._cpu_register_ptrs = [arena.data_ptr()]
+        self._cpu_register_lengths = [arena_size]
+
+        for layer_name, cache, offset, raw_size in cache_layout:
+            cache_bytes = arena.narrow(0, offset, raw_size)
+            cpu_caches[layer_name].append(cache_bytes.view(cache.dtype).view(cache.shape))
         return cpu_caches
 
     def _get_register_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
-        register_regions = super()._get_register_regions(kv_caches)
+        register_regions = self._get_storage_merged_device_regions(kv_caches)
+        device_region_count = len(register_regions.ptrs)
         # V1 has already flattened the HBM tensors. Record which slots belong
         # to each named cache, including distinct components of one PP layer.
         next_slot: dict[int, int] = defaultdict(int)
@@ -1748,6 +1797,13 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             # Register the owning 2M-aligned buffers, not just their tensor views.
             register_regions.ptrs.extend(self._cpu_register_ptrs)
             register_regions.lengths.extend(self._cpu_register_lengths)
+        logger.info(
+            "D2RH register regions: device=%d host=%d total=%d registered_bytes=%d",
+            device_region_count,
+            len(register_regions.ptrs) - device_region_count,
+            len(register_regions.ptrs),
+            register_regions.registered_bytes,
+        )
         return register_regions
 
     def _create_recv_thread(self, ready_event: threading.Event) -> KVCacheRecvingThread:

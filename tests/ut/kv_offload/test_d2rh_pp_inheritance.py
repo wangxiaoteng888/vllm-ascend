@@ -113,14 +113,16 @@ def test_shared_registration_preserves_layout_and_host_regions(worker_cls, role)
         else:
             assert "layer_cache_indices" not in worker.kv_group2layeridx[0][0]
         if worker_cls is d2rh.MooncakeConnectorWorker and role == "kv_consumer":
-            assert allocate.call_count == 3
-            assert len(worker.cpu_caches_hold) == 3
+            assert allocate.call_count == 1
+            assert len(worker.cpu_caches_hold) == 1
             assert len(set(worker.cpu_kv_caches_base_addr[22])) == 3
             assert worker.cpu_block_stride_per_addr[22] == [24, 8, 24]
             assert worker.cpu_block_size_scale[22] == [2, 2, 2]
-            assert worker._cpu_register_lengths == [d2rh.HUGEPAGE_SIZE_2M] * 3
-            assert register.call_args.args[0][-3:] == worker._cpu_register_ptrs
-            assert register.call_args.args[1][-3:] == worker._cpu_register_lengths
+            assert worker._cpu_register_lengths == [d2rh.HUGEPAGE_SIZE_2M * 3]
+            assert worker._cpu_register_ptrs[0] % d2rh.HUGEPAGE_SIZE_2M == 0
+            assert register.call_args.args[0][-1:] == worker._cpu_register_ptrs
+            assert register.call_args.args[1][-1:] == worker._cpu_register_lengths
+            assert len(register.call_args.args[0]) == 2  # One HBM storage and one Host arena.
             assert receiver.call_args.kwargs["cpu_kvcache_manager"] is worker.cpu_kvcache_manager
             assert receiver.call_args.kwargs["remote_local_block_map"] is worker.remote_local_block_map
             hop1.return_value.start.assert_called_once()
