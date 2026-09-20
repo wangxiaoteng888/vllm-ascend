@@ -34,6 +34,7 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     KVCacheTaskTracker,
     MooncakeAgentMetadata,
     MooncakeConnectorMetadata,
+    RemotePortInfo,
     SizedDict,
     build_layer_name_to_metadata_idx,
     ensure_zmq_send,
@@ -1662,6 +1663,20 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
     def _handle_request(self, req_meta: dict[str, Any]) -> None:
         self._h2d_remote_request_ids[req_meta["request_id"]] = req_meta["remote_request_id"]
         super()._handle_request(req_meta)
+
+    def _send_done_recv_signal(
+        self,
+        request_id: str,
+        remote_host: str,
+        remote_handshake_port: int,
+        remote_port_send_num: dict[int, RemotePortInfo],
+    ) -> None:
+        # D2RHThread already acknowledged the P-to-Host transfer. H2D reads
+        # only the staged copy, so it must not complete the P request again.
+        # Preserve base cleanup for CP peers that did not participate in a
+        # pull and therefore received no first-hop completion notification.
+        if remote_port_send_num and remote_port_send_num[remote_handshake_port]["num"] == 0:
+            super()._send_done_recv_signal(request_id, remote_host, remote_handshake_port, remote_port_send_num)
 
     def _mark_request_task_done(self, request_id: str, all_task_done: bool) -> bool:
         # all_task_done marks the last SUBMITTED shard, not the last completed
