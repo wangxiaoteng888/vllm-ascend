@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
-"""Unit tests for the Mooncake D2RH connector (MooncakeD2RHConnectorV1).
+"""Unit tests for the Mooncake D2RH connector.
 
-Covers the PR #9648 baseline (Hop2 block-map translation, CPU staging
-allocation, handshake metadata) plus the PR #15912 host-cache additions
-(content-hash host cache with pending/commit/pin/LRU semantics,
-offset-qualified block maps, handshake_port propagation, scheduler helpers).
+Covers block-map translation, CPU staging, handshake metadata, content-based
+host caching, offset-qualified block maps, and scheduler helpers.
 """
 
 import sys
@@ -50,9 +48,8 @@ class TestMooncakeAgentMetadata:
 
         assert metadata.block_strides == [[256, 256]]
         assert metadata.kv_group2layeridx[0][1] == [0]
-        # Regression guard: PR #9648 shipped register_kv_caches without
-        # handshake_port (msgspec default 0), which failed the base-class
-        # handshake validation for tuple keys.
+        # The handshake port must survive metadata registration so tuple-key
+        # lookup can validate the remote worker endpoint.
         assert metadata.handshake_port == 30007
 
 
@@ -309,8 +306,7 @@ class TestKVCacheRecvingThreadHop2:
         thread = object.__new__(d2rh.KVCacheRecvingThread)
         thread.remote_local_block_map = block_map_by_req
         thread.cpu_host = "127.0.0.1"
-        # PR #15912 gates the full-block-map log line behind this flag; keep
-        # the attribute aligned with the V1 implementation.
+        # Match the worker state used by the full-block-map diagnostic path.
         thread.log_full_block_map = False
         # _handle_request records the H2D request mapping before delegating.
         thread._h2d_remote_request_ids = {}
@@ -755,8 +751,7 @@ class TestRegisterKvCaches:
 
         mock_metadata.assert_called_once()
         kwargs = mock_metadata.call_args.kwargs
-        # Regression guard for the PR #9648 bug where the D2RH worker dropped
-        # handshake_port and the msgspec default 0 failed validation.
+        # The worker must forward its handshake port into registered metadata.
         assert kwargs["handshake_port"] == 30007
         assert kwargs["engine_id"] == "engine"
         assert worker.xfer_handshake_metadata is mock_metadata.return_value
