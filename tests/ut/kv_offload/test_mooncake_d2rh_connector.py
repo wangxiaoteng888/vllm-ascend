@@ -29,7 +29,6 @@ if "mooncake.engine" not in sys.modules:
         sys.modules["mooncake.engine"] = _fake_engine
 
 from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec  # noqa: E402
-from vllm_ascend.distributed.kv_transfer.kv_p2p import mooncake_connector as mc_base  # noqa: E402
 from vllm_ascend.distributed.kv_transfer.kv_p2p import mooncake_d2rh_connector as d2rh  # noqa: E402
 
 
@@ -287,9 +286,7 @@ class TestHostContentCache:
 
     def test_commit_replaces_stale_block_for_same_content(self):
         manager = self._manager()
-        first_block_map, _, first_misses = manager.alloc_sharded_block_map(
-            ([10],), self._pulls(), ([b"\x01"],)
-        )
+        first_block_map, _, first_misses = manager.alloc_sharded_block_map(([10],), self._pulls(), ([b"\x01"],))
         manager.commit_block_map(first_block_map, first_misses)
         stale_block_id = first_block_map[(0, 10, 0)]
         manager.free_block_map(first_block_map)
@@ -337,7 +334,7 @@ class TestKVCacheRecvingThreadHop2:
         thread = self._thread({"remote-req": {(0, 10): 3, (0, 11): 4, (1, 7): 5}})
         req_meta = self._req_meta()
 
-        with patch.object(d2rh.BaseKVCacheRecvingThread, "_transfer_kv_cache_all_groups") as mock_transfer:
+        with patch.object(d2rh.KVCacheRecvingThread, "_transfer_staged_kv_cache_all_groups") as mock_transfer:
             d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
 
         mock_transfer.assert_called_once()
@@ -354,7 +351,7 @@ class TestKVCacheRecvingThreadHop2:
             group_pulls=[SimpleNamespace(group_id=0, remote_tp_offset=2)],
         )
 
-        with patch.object(d2rh.BaseKVCacheRecvingThread, "_transfer_kv_cache_all_groups") as mock_transfer:
+        with patch.object(d2rh.KVCacheRecvingThread, "_transfer_staged_kv_cache_all_groups") as mock_transfer:
             d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
 
         assert mock_transfer.call_args.args[0]["remote_block_ids"] == ([7],)
@@ -363,17 +360,15 @@ class TestKVCacheRecvingThreadHop2:
         thread = self._thread({"remote-req": {(0, 10): 3}})
         req_meta = self._req_meta(remote_block_ids=([10, 11],))
 
-        with patch.object(d2rh.BaseKVCacheRecvingThread, "_transfer_kv_cache_all_groups"):
-            with pytest.raises(RuntimeError, match="missing key"):
-                d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
+        with pytest.raises(RuntimeError, match="missing key"):
+            d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
 
     def test_missing_request_map_raises(self):
         thread = self._thread({})
         req_meta = self._req_meta(remote_block_ids=([10],))
 
-        with patch.object(d2rh.BaseKVCacheRecvingThread, "_transfer_kv_cache_all_groups"):
-            with pytest.raises(RuntimeError, match="block map missing for request"):
-                d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
+        with pytest.raises(RuntimeError, match="block map missing for request"):
+            d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
 
     def test_handle_request_records_mapping_and_defers_cleanup(self):
         manager = d2rh.D2RHCPUCacheManager(4)
@@ -519,6 +514,7 @@ class TestGetNumNewMatchedTokens:
         scheduler.use_sparse = False
         scheduler.tp_size = 2
         scheduler.kv_cache_groups = []
+        scheduler.vllm_config = SimpleNamespace()
         scheduler._send_start_pull = lambda request_id, params, port: d2rh.STAGING_FULL
         request = self._request(
             {
@@ -628,7 +624,7 @@ class TestUpdateStateAfterAlloc:
 
 
 class TestSchedulerBlockSize:
-    """_get_scheduler_block_size (inherited from the patched base scheduler).
+    """D2RH-local DeepSeek-V4 scheduler block-size compatibility.
 
     Hybrid KV cache initialization stores the smallest physical group block
     size in cache_config; the resolved DSV4 SWA spec retains the logical
@@ -675,6 +671,45 @@ class TestSchedulerBlockSize:
         # keep cache_config.block_size instead of the SWA spec size.
         assert scheduler._get_scheduler_block_size() == 128
 
+    def test_refreshes_block_size_before_base_scheduler_snapshot(self):
+        calls: list[tuple[str, int]] = []
+        extras = {
+            "prefill": {"tp_size": 1, "pp_size": 1},
+            "decode": {"tp_size": 1},
+        }
+        config = SimpleNamespace(
+            cache_config=SimpleNamespace(block_size=2),
+            kv_transfer_config=SimpleNamespace(
+                kv_role="kv_producer",
+                get_from_extra_config=lambda name, default: extras.get(name, default),
+            ),
+            model_config=SimpleNamespace(
+                hf_text_config=SimpleNamespace(num_key_value_heads=1),
+                is_deepseek_mla=True,
+            ),
+        )
+        cache_config = SimpleNamespace(kv_cache_groups=[])
+
+        def refresh(vllm_config):
+            calls.append(("refresh", vllm_config.cache_config.block_size))
+            vllm_config.cache_config.block_size = 32
+
+        def base_init(scheduler, vllm_config, engine_id, kv_cache_config):
+            calls.append(("base", vllm_config.cache_config.block_size))
+            scheduler.vllm_config = vllm_config
+            scheduler.kv_cache_config = kv_cache_config
+
+        with (
+            patch.object(d2rh, "refresh_block_size", side_effect=refresh) as refresh_mock,
+            patch.object(d2rh.BaseMooncakeConnectorScheduler, "__init__", new=base_init),
+            patch.object(d2rh, "get_ip", return_value="127.0.0.1"),
+        ):
+            scheduler = d2rh.MooncakeConnectorScheduler(config, "engine", cache_config)
+
+        refresh_mock.assert_called_once_with(config)
+        assert calls == [("refresh", 2), ("base", 32)]
+        assert scheduler.block_size == 32
+
 
 class TestRegisterKvCaches:
     def test_propagates_handshake_port_to_agent_metadata(self):
@@ -707,15 +742,14 @@ class TestRegisterKvCaches:
                     arg.set()
             return MagicMock()
 
-        # register_kv_caches lives on the base worker; its module-level
-        # collaborators resolve in the base module namespace.
+        # The lifecycle is D2RH-local, so all collaborators resolve here too.
         with (
-            patch.object(mc_base, "enable_sfa_dcp_replicated_indexer", return_value=False),
-            patch.object(mc_base, "validate_register_region_count"),
-            patch.object(mc_base, "global_te"),
-            patch.object(mc_base, "get_ip", return_value="127.0.0.1"),
-            patch.object(mc_base, "MooncakeAgentMetadata") as mock_metadata,
-            patch.object(mc_base, "KVCacheSendingThread", side_effect=_capture_thread),
+            patch.object(d2rh, "enable_sfa_dcp_replicated_indexer", return_value=False),
+            patch.object(d2rh, "validate_register_region_count"),
+            patch.object(d2rh, "global_te"),
+            patch.object(d2rh, "get_ip", return_value="127.0.0.1"),
+            patch.object(d2rh, "MooncakeAgentMetadata") as mock_metadata,
+            patch.object(d2rh, "KVCacheSendingThread", side_effect=_capture_thread),
         ):
             worker.register_kv_caches({})
 

@@ -3,7 +3,7 @@
 
 import unittest
 
-from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
+from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_d2rh_connector import (
     resolve_group_cache_slot_pairs as resolve,
 )
 
