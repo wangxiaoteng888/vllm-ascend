@@ -77,7 +77,6 @@ from vllm_ascend.utils import (
     enable_sfa_dcp_replicated_indexer,
     get_kv_cache_tensor_layers,
     model_uses_sfa_sparse,
-    refresh_block_size,
 )
 
 # isort: off
@@ -823,7 +822,6 @@ class KVCacheRecvingThread(threading.Thread):
                 self.kv_group2layeridx,
             )
         remote_layer_name_to_idx = build_layer_name_to_metadata_idx(remote_kv_group2layeridx)
-        remote_cache_slots = build_layer_name_to_cache_slots(remote_kv_group2layeridx)
         session_id = f"{remote_host}:{remote_transfer_port}"
 
         req_start_time = time.perf_counter()
@@ -990,20 +988,12 @@ class KVCacheRecvingThread(threading.Thread):
                     group_spec,
                     raw_layer_indices,
                 )
-                cache_pairs = resolve_group_cache_slot_pairs(
-                    group_spec,
-                    raw_layer_indices,
-                    layer_idx,
-                    remote_cache_slots,
-                    len(local_kv_caches_base_addrs[layer_idx]),
-                    len(remote_kv_caches_base_addrs[remote_layer_idx]),
-                )
-                for cache_idx, remote_cache_idx in cache_pairs:
+                for cache_idx in range(len(local_kv_caches_base_addrs[layer_idx])):
                     src_layer_base_addr = local_kv_caches_base_addrs[layer_idx][cache_idx]
-                    dst_layer_base_addr = remote_kv_caches_base_addrs[remote_layer_idx][remote_cache_idx]
+                    dst_layer_base_addr = remote_kv_caches_base_addrs[remote_layer_idx][cache_idx]
                     block_len = self.block_len_per_addr[layer_idx][cache_idx]
                     block_stride = self.block_stride_per_addr[layer_idx][cache_idx]
-                    remote_block_stride = remote_block_stride_per_addr[remote_layer_idx][remote_cache_idx]
+                    remote_block_stride = remote_block_stride_per_addr[remote_layer_idx][cache_idx]
                     inner_block_len = block_len // tp_num_need_pulls
                     is_sfa_indexer_group = group_spec["kv_cache_spec_type"] == "AscendSFAIndexerCacheSpec"
                     if is_sfa_indexer_group and has_replicate_k_blocks:
@@ -1629,19 +1619,13 @@ class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
         self._connector_metadata = MooncakeConnectorMetadata()
 
         if role == KVConnectorRole.SCHEDULER:
-            self.connector_scheduler: MooncakeConnectorScheduler | None = self._create_scheduler(
-                vllm_config, kv_cache_config
+            self.connector_scheduler: MooncakeConnectorScheduler | None = MooncakeConnectorScheduler(
+                vllm_config, str(self.engine_id), kv_cache_config
             )
             self.connector_worker: MooncakeConnectorWorker | None = None
         elif role == KVConnectorRole.WORKER:
             self.connector_scheduler = None
-            self.connector_worker = self._create_worker(vllm_config, kv_cache_config)
-
-    def _create_scheduler(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
-        return MooncakeConnectorScheduler(vllm_config, str(self.engine_id), kv_cache_config)
-
-    def _create_worker(self, vllm_config: VllmConfig, kv_cache_config: KVCacheConfig | None):
-        return MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
+            self.connector_worker = MooncakeConnectorWorker(vllm_config, str(self.engine_id), kv_cache_config)
 
     ############################################################
     # Scheduler Side Methods
@@ -1753,13 +1737,8 @@ class MooncakeConnectorScheduler:
         self.vllm_config = vllm_config
         self.kv_cache_config = kv_cache_config
         init_ascend_config(vllm_config)
-        # EngineCore may replace cache_config.block_size with the smallest
-        # physical hybrid-cache group size (2 for DSV4 C4 state). Restore the
-        # model's logical block size at the scheduler consumption boundary so
-        # Mooncake metadata agrees with the DSV4 attention KV layout.
-        refresh_block_size(vllm_config)
         self.ascend_config = get_ascend_config()
-        self.block_size = self._get_scheduler_block_size()
+        self.block_size = vllm_config.cache_config.block_size
         self.engine_id = engine_id
         self.local_ip = get_ip()
         logger.info("Initializing Mooncake Scheduler %s", engine_id)
@@ -1796,16 +1775,6 @@ class MooncakeConnectorScheduler:
         self.use_compress = self._model_uses_compress()
         self.group_transfer_info = [self._get_group_transfer_info(group) for group in kv_cache_config.kv_cache_groups]
         self.need_truncate = self.use_compress or any(info.is_state_group for info in self.group_transfer_info)
-
-    def _get_scheduler_block_size(self) -> int:
-        # Hybrid KV cache initialization stores the smallest physical group
-        # block size in cache_config. The resolved DSV4 SWA spec retains the
-        # logical block size needed by Mooncake transfer metadata.
-        for group in self.kv_cache_config.kv_cache_groups:
-            for spec in self._get_group_unique_specs(group):
-                if isinstance(spec, AscendSlidingWindowMLASpec) and spec.model_version == "deepseek_v4":
-                    return spec.block_size
-        return self.vllm_config.cache_config.block_size
 
     def _model_uses_compress(self) -> bool:
         hf_config = getattr(self.vllm_config.model_config, "hf_config", None)
@@ -2644,6 +2613,7 @@ class MooncakeConnectorWorker:
         # layer indices: {group_id: (group_spec, [layer_idx0, layer_idx1, ...])}.
         self.kv_group2layeridx = self._build_kv_group2layeridx()
         self._is_hma_required = self._is_hma_required or self._requires_group_aware_attention_transfer()
+        has_mamba_group = self._has_mamba_group()
         layer_name_to_idx = {
             layer_name: layer_idx
             for _, (group_spec, layer_indices) in self.kv_group2layeridx.items()
@@ -2680,7 +2650,18 @@ class MooncakeConnectorWorker:
                 self.block_size_scale[layer_idx].append(block_size_scale)
                 self.kv_caches_base_addr[layer_idx].append(single_kv_cache.data_ptr())
 
-        register_regions = self._get_register_regions(kv_caches)
+        if has_mamba_group:
+            ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)
+            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
+        elif self.use_hybrid:
+            ptrs, lengths = self._get_registered_kv_tensor_buffers_hybrid(kv_caches)
+            register_regions = RegisterRegions(ptrs=ptrs, lengths=lengths)
+        else:
+            # For normal attention / sparse-c8 KV cache, keep metadata at the
+            # logical tensor level but merge registration ranges by underlying
+            # storage to avoid exceeding the HCCL per-process region limit.
+            register_regions = collect_storage_merged_register_regions(kv_caches)
+
         validate_register_region_count(register_regions)
         global_te.register_buffer(register_regions.ptrs, register_regions.lengths)
 
@@ -2729,7 +2710,25 @@ class MooncakeConnectorWorker:
             )
             self.kv_send_thread.start()
         else:
-            self.kv_recv_thread = self._create_recv_thread(ready_event)
+            self.kv_recv_thread = KVCacheRecvingThread(
+                self.tp_rank,
+                self.tp_size,
+                self._prefill_pp_size,
+                self.engine,
+                self.engine_id,
+                self.handshake_port,
+                self.side_channel_port,
+                self.kv_caches_base_addr,
+                self.block_len_per_addr,
+                self.block_stride_per_addr,
+                self._is_hma_required,
+                ready_event,
+                self.vllm_config,
+                self.kv_caches,
+                self._prefill_pp_layer_partition,
+                self.kv_group2layeridx,
+                self.block_size_scale,
+            )
             self.kv_recv_thread.start()
         start_wait_time = time.time()
         thread = self.kv_send_thread if self.kv_role == "kv_producer" else self.kv_recv_thread
@@ -2740,48 +2739,6 @@ class MooncakeConnectorWorker:
             if time.time() - start_wait_time > 5 * 60:
                 raise RuntimeError("Timeout waiting for KV Cache thread to be ready.")
             time.sleep(3)
-
-    def _get_register_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
-        """Collect HBM regions; staging connectors may append Host regions."""
-        if self._has_mamba_group():
-            ptrs, lengths = self._get_registered_kv_tensor_buffers(kv_caches)
-            return RegisterRegions(ptrs=ptrs, lengths=lengths)
-        if self.use_hybrid:
-            ptrs, lengths = self._get_registered_kv_tensor_buffers_hybrid(kv_caches)
-            return RegisterRegions(ptrs=ptrs, lengths=lengths)
-        # Merge storage aliases to stay below the transport's region limit.
-        return collect_storage_merged_register_regions(kv_caches)
-
-    def _create_recv_thread(
-        self,
-        ready_event: threading.Event,
-        *,
-        receiver_cls: type[KVCacheRecvingThread] | None = None,
-        **kwargs: Any,
-    ) -> KVCacheRecvingThread:
-        """Construct a receiver using the common V1 worker metadata."""
-        if receiver_cls is None:
-            receiver_cls = KVCacheRecvingThread
-        return receiver_cls(
-            self.tp_rank,
-            self.tp_size,
-            self._prefill_pp_size,
-            self.engine,
-            self.engine_id,
-            self.handshake_port,
-            self.side_channel_port,
-            self.kv_caches_base_addr,
-            self.block_len_per_addr,
-            self.block_stride_per_addr,
-            self._is_hma_required,
-            ready_event,
-            self.vllm_config,
-            self.kv_caches,
-            self._prefill_pp_layer_partition,
-            self.kv_group2layeridx,
-            self.block_size_scale,
-            **kwargs,
-        )
 
     def get_finished(self) -> tuple[set[str], set[str]]:
         done_sending = (
@@ -4281,60 +4238,6 @@ def build_layer_name_to_metadata_idx(
         for layer_name, layer_idx in zip(layer_names, layer_indices):
             layer_name_to_idx[layer_name] = layer_idx
     return layer_name_to_idx
-
-
-def build_layer_name_to_cache_slots(
-    kv_group2layeridx: dict[int, tuple[dict[str, Any], list[int]]],
-) -> dict[str, list[int]]:
-    result: dict[str, list[int]] = {}
-    for group_spec, _ in kv_group2layeridx.values():
-        for name, slots in group_spec.get("layer_cache_indices", {}).items():
-            if name in result and result[name] != slots:
-                raise RuntimeError(f"Conflicting KV component metadata for {name!r}")
-            result[name] = slots
-    return result
-
-
-def resolve_group_cache_slot_pairs(
-    group_spec: dict[str, Any],
-    layer_indices: list[int],
-    layer_idx: int,
-    remote_cache_slots: dict[str, list[int]],
-    local_count: int,
-    remote_count: int,
-) -> list[tuple[int, int]]:
-    """Select only cache components owned by this KV group, by stable names.
-
-    A transformer layer can own compressed attention, SWA and compressor state
-    in different groups. Their physical buffers can alias OTHER layers, with
-    a different alias layout after PP partitioning. Copying all components for
-    each group can therefore overwrite valid KV with another layer's bytes.
-    """
-    local_slots = group_spec.get("layer_cache_indices")
-    if local_slots is None:
-        if local_count != remote_count:
-            raise RuntimeError("Legacy KV component counts differ between peers")
-        return [(index, index) for index in range(local_count)]
-    names = group_spec.get("layer_names", [])
-    if len(names) != len(layer_indices):
-        raise RuntimeError("Misaligned KV component layer metadata")
-    result: list[tuple[int, int]] = []
-    for name, index in zip(names, layer_indices):
-        if index != layer_idx:
-            continue
-        local = local_slots.get(name)
-        remote = remote_cache_slots.get(name)
-        if local is None or remote is None or len(local) != len(remote):
-            raise RuntimeError(f"Missing or incompatible KV component metadata for {name!r}")
-        for local_idx, remote_idx in zip(local, remote):
-            if not (0 <= local_idx < local_count and 0 <= remote_idx < remote_count):
-                raise RuntimeError(f"Out-of-range KV component metadata for {name!r}")
-            pair = (local_idx, remote_idx)
-            if pair not in result:
-                result.append(pair)
-    if not result:
-        raise RuntimeError(f"KV group owns no components for metadata layer {layer_idx}")
-    return result
 
 
 def resolve_remote_layer_idx(

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""D2RH reuses V1 lifecycle without dropping Host staging or PP metadata."""
+"""D2RH owns its extensions without changing the generic V1 connector."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -32,8 +32,8 @@ def test_facade_inherits_dispatch_and_selects_correct_implementation(module, rol
             connector.register_kv_caches("caches")
             worker.return_value.register_kv_caches.assert_called_once_with("caches")
     assert issubclass(d2rh.MooncakeConnector, v1.MooncakeConnector)
-    assert d2rh.MooncakeConnector.register_kv_caches is v1.MooncakeConnector.register_kv_caches
-    assert d2rh.MooncakeConnectorWorker.register_kv_caches is v1.MooncakeConnectorWorker.register_kv_caches
+    assert d2rh.MooncakeConnector.__init__ is not v1.MooncakeConnector.__init__
+    assert d2rh.MooncakeConnectorWorker.register_kv_caches is not v1.MooncakeConnectorWorker.register_kv_caches
 
 
 def make_worker(worker_cls, role):
@@ -70,8 +70,9 @@ def make_worker(worker_cls, role):
 
 @pytest.mark.parametrize("worker_cls", [v1.MooncakeConnectorWorker, d2rh.MooncakeConnectorWorker])
 @pytest.mark.parametrize("role", ["kv_producer", "kv_consumer"])
-def test_shared_registration_preserves_layout_and_host_regions(worker_cls, role):
+def test_registration_preserves_layout_and_d2rh_owns_host_regions(worker_cls, role):
     worker = make_worker(worker_cls, role)
+    runtime_module = d2rh if worker_cls is d2rh.MooncakeConnectorWorker else v1
     tensor = torch.empty((8, 2, 3))
     caches = {"layer22.indexer": (tensor, tensor[:, :, :1]), "layer22.swa": tensor}
     real_empty = torch.empty
@@ -87,14 +88,10 @@ def test_shared_registration_preserves_layout_and_host_regions(worker_cls, role)
         return thread
 
     with (
-        patch.object(v1, "enable_sfa_dcp_replicated_indexer", return_value=False),
-        patch.object(v1.global_te, "register_buffer") as register,
-        patch.object(v1, "KVCacheSendingThread", side_effect=ready_thread) as sender,
-        patch.object(
-            v1 if worker_cls is v1.MooncakeConnectorWorker else d2rh,
-            "KVCacheRecvingThread",
-            side_effect=ready_thread,
-        ) as receiver,
+        patch.object(runtime_module, "enable_sfa_dcp_replicated_indexer", return_value=False),
+        patch.object(runtime_module.global_te, "register_buffer") as register,
+        patch.object(runtime_module, "KVCacheSendingThread", side_effect=ready_thread) as sender,
+        patch.object(runtime_module, "KVCacheRecvingThread", side_effect=ready_thread) as receiver,
         patch.object(d2rh, "D2RHThread") as hop1,
         patch.object(d2rh, "get_d2rh_zmq_port", return_value=38100),
         patch.object(d2rh, "get_scheduler_ready_zmq_port", return_value=38200),
