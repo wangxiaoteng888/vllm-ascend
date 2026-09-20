@@ -147,11 +147,11 @@ class TestD2RHCPUCacheManager:
 
 
 class TestHostContentCache:
-    """alloc_sharded_block_map / commit / release with enable_host_cache=True."""
+    """Exercise host-cache allocation, commit, and release semantics."""
 
     @staticmethod
     def _manager(capacity: int = 4) -> d2rh.D2RHCPUCacheManager:
-        return d2rh.D2RHCPUCacheManager(capacity, enable_host_cache=True)
+        return d2rh.D2RHCPUCacheManager(capacity)
 
     @staticmethod
     def _pulls(group_id: int = 0, remote_tp_offset: int = 0) -> list[list[dict]]:
@@ -458,10 +458,8 @@ class TestPrefixFingerprint:
 
 class TestGetNumNewMatchedTokens:
     @staticmethod
-    def _scheduler(propagate: bool = True, ready: bool = True):
+    def _scheduler(ready: bool = True):
         scheduler = object.__new__(d2rh.MooncakeConnectorScheduler)
-        scheduler.propagate_num_computed_tokens = propagate
-        scheduler.enable_host_cache = False
         scheduler.host_cache_hash_source = "prefill"
         scheduler.all_requests = set()
         scheduler.listeningthread = SimpleNamespace(
@@ -492,16 +490,16 @@ class TestGetNumNewMatchedTokens:
         assert params["num_computed_tokens"] == 40
 
     def test_not_ready_request_returns_none(self):
-        scheduler = self._scheduler(propagate=False, ready=False)
+        scheduler = self._scheduler(ready=False)
         scheduler.all_requests.add("req1")
         request = self._request()
         params = request.kv_transfer_params
 
         assert scheduler.get_num_new_matched_tokens(request, 40) == (None, False)
-        assert "num_computed_tokens" not in params
+        assert params["num_computed_tokens"] == 40
 
     def test_staging_full_discards_request_and_returns_none(self):
-        scheduler = self._scheduler(propagate=False)
+        scheduler = self._scheduler()
         scheduler._decode_tp_size = 1
         scheduler._prefill_tp_size = 2
         scheduler._prefill_pp_size = 1
@@ -534,20 +532,20 @@ class TestGetNumNewMatchedTokens:
         ):
             assert scheduler.get_num_new_matched_tokens(request, 0) == (None, False)
 
+        assert request.kv_transfer_params["num_computed_tokens"] == 0
         assert "req1" not in scheduler.all_requests
         assert "req1" not in scheduler.listeningthread.ready_count
 
 
 class TestRequestFinished:
     @staticmethod
-    def _scheduler(enable_host_cache: bool):
+    def _scheduler():
         scheduler = object.__new__(d2rh.MooncakeConnectorScheduler)
-        scheduler.enable_host_cache = enable_host_cache
         scheduler.host_cache_hash_source = "prefill"
         return scheduler
 
-    def test_publishes_block_hashes_when_host_cache_enabled(self):
-        scheduler = self._scheduler(enable_host_cache=True)
+    def test_publishes_block_hashes(self):
+        scheduler = self._scheduler()
         request = SimpleNamespace(request_id="req1", kv_transfer_params={}, prompt_token_ids=[1] * 64)
         base_params = {"remote_block_ids": ([1],)}
         sentinel_hashes = (["ab" * 32],)
@@ -567,25 +565,8 @@ class TestRequestFinished:
         # the host cache before the first pull completes.
         assert params["d2rh_block_hashes"] is sentinel_hashes
 
-    def test_skips_block_hashes_when_host_cache_disabled(self):
-        scheduler = self._scheduler(enable_host_cache=False)
-        request = SimpleNamespace(request_id="req1", kv_transfer_params={}, prompt_token_ids=[1] * 64)
-        base_params = {"remote_block_ids": ([1],)}
-
-        with patch.object(
-            d2rh.BaseMooncakeConnectorScheduler,
-            "request_finished",
-            return_value=(False, base_params),
-        ):
-            delay_free, params = scheduler.request_finished(request, ([1],))
-
-        assert delay_free is False
-        # Params pass through untouched: no hash injection, no republishing.
-        assert params is base_params
-        assert "d2rh_block_hashes" not in params
-
     def test_passes_through_when_base_returns_no_params(self):
-        scheduler = self._scheduler(enable_host_cache=True)
+        scheduler = self._scheduler()
         request = SimpleNamespace(request_id="req1", kv_transfer_params=None, prompt_token_ids=[])
 
         with patch.object(

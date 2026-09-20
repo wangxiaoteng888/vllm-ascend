@@ -459,9 +459,8 @@ def _get_group_pull_field(group_pull: GroupPull | dict[str, Any], field: str) ->
 
 
 class D2RHCPUCacheManager:
-    def __init__(self, num_blocks: int, enable_host_cache: bool = False):
+    def __init__(self, num_blocks: int):
         self.num_blocks = num_blocks
-        self.enable_host_cache = enable_host_cache
         self.free_queue = deque(range(num_blocks))
         self.used_set: set[int] = set()
         # Valid entries are retained after a request finishes. OrderedDict
@@ -570,7 +569,7 @@ class D2RHCPUCacheManager:
             for key in remote_keys:
                 group_id, remote_block_id, remote_tp_offset = key
                 content_hash: bytes | None = None
-                if self.enable_host_cache and block_hashes is not None and group_id < len(block_hashes):
+                if block_hashes is not None and group_id < len(block_hashes):
                     group_hashes = block_hashes[group_id]
                     block_idx = block_index_by_group[group_id].get(remote_block_id, -1)
                     if 0 <= block_idx < len(group_hashes):
@@ -1637,12 +1636,6 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         self.timeout = 1.0
         self.remote_sockets_lock = threading.Lock()
         self.local_host = get_ip()
-        self.propagate_num_computed_tokens = bool(
-            vllm_config.kv_transfer_config.get_from_extra_config("d2rh_propagate_num_computed_tokens", False)
-        )
-        self.enable_host_cache = bool(
-            vllm_config.kv_transfer_config.get_from_extra_config("d2rh_enable_host_cache", False)
-        )
         self.host_cache_hash_source = str(
             vllm_config.kv_transfer_config.get_from_extra_config("d2rh_host_cache_hash_source", "prefill")
         )
@@ -1797,7 +1790,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         block_ids: BlockIds,
     ) -> tuple[bool, dict[str, Any] | None]:
         delay_free, params = super().request_finished(request, block_ids)
-        if self.enable_host_cache and self.host_cache_hash_source == "prefill" and params is not None:
+        if self.host_cache_hash_source == "prefill" and params is not None:
             remote_block_ids: BlockIds = params["remote_block_ids"]
             params["d2rh_block_hashes"] = self._d2rh_get_transfer_block_hashes(
                 request,
@@ -1965,14 +1958,13 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 first_hash,
                 probe_hash,
             )
-            if self.propagate_num_computed_tokens:
-                # START_PULL serializes a copy of params. Publish the D-local
-                # prefix hit before that message is built and sent.
-                params["num_computed_tokens"] = num_computed_tokens
+            # START_PULL serializes a copy of params. Publish the D-local
+            # prefix hit before that message is built and sent.
+            params["num_computed_tokens"] = num_computed_tokens
             if request.request_id not in self.all_requests:
                 got_staging_full = False
                 decode_block_hashes = None
-                if self.enable_host_cache and self.host_cache_hash_source == "decode":
+                if self.host_cache_hash_source == "decode":
                     decode_block_hashes = self._d2rh_get_decode_block_hashes(
                         request,
                         tuple(params.get("remote_block_ids") or ()),
@@ -2235,11 +2227,8 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             group_spec["layer_cache_indices"] = {name: layer_cache_indices[name] for name in group_spec["layer_names"]}
 
         if self.kv_role == "kv_consumer":
-            enable_host_cache = bool(
-                self.vllm_config.kv_transfer_config.get_from_extra_config("d2rh_enable_host_cache", False)
-            )
-            self.cpu_kvcache_manager = D2RHCPUCacheManager(self.num_blocks, enable_host_cache=enable_host_cache)
-            logger.info("D2RH host content cache enabled=%s capacity_blocks=%d", enable_host_cache, self.num_blocks)
+            self.cpu_kvcache_manager = D2RHCPUCacheManager(self.num_blocks)
+            logger.info("D2RH host content cache capacity_blocks=%d", self.num_blocks)
             cpu_caches = self._make_cpu_staging_caches(kv_caches)
             metadata_layers = len(self.kv_caches_base_addr)
             self.cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
