@@ -23,6 +23,7 @@ from vllm.distributed.kv_transfer.kv_connector.utils import BlockIds
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 from vllm.logger import logger
 from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
+from vllm.v1.core import kv_cache_utils
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, AscendSlidingWindowMLASpec
@@ -1710,6 +1711,16 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
             raise ValueError(
                 f"d2rh_host_cache_hash_source must be 'prefill' or 'decode', got {self.host_cache_hash_source!r}"
             )
+        # Use the same hash granularity as Request, not the transfer page size.
+        # Older runtimes without the resolver retain the token-chain fallback.
+        self._decode_hash_block_size: int | None = None
+        resolve_block_sizes = getattr(kv_cache_utils, "resolve_kv_cache_block_sizes", None)
+        if (
+            self.kv_role == "kv_consumer"
+            and self.host_cache_hash_source == "decode"
+            and resolve_block_sizes is not None
+        ):
+            _, self._decode_hash_block_size = resolve_block_sizes(kv_cache_config, vllm_config)
         if self.kv_role == "kv_consumer":
             self.all_requests: set[str] = set()
             self.listeningthread = HostListeningThread(
@@ -1813,6 +1824,53 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 result.append([pair[1].hex() for pair in pairs])
         return tuple(result)
 
+    def _d2rh_get_decode_endpoint_hashes(
+        self,
+        request: "Request",
+        remote_block_ids: BlockIds,
+    ) -> tuple[list[str | None], ...] | None:
+        """Reuse Request's chained hashes at only the transferred endpoints.
+
+        Each complete hash covers the entire preceding prefix, including cache
+        identity such as salt. Include partial hash-block tokens explicitly.
+        The separate namespace prevents mixing these keys with legacy chains.
+        """
+        hash_block_size = getattr(self, "_decode_hash_block_size", None)
+        block_hashes = getattr(request, "block_hashes", ())
+        tokens = request.prompt_token_ids or []
+        if not hash_block_size or not block_hashes or len(block_hashes) < len(tokens) // hash_block_size:
+            return None
+        cp_size = max(1, self.pcp_size * self.dcp_size)
+        result: list[list[str | None]] = []
+        for group_id, (remote_ids, info) in enumerate(zip(remote_block_ids, self.group_transfer_info)):
+            count = len(remote_ids)
+            if not count:
+                result.append([])
+                continue
+            tokens_per_block = max(1, len(tokens)) if info.is_state_group else info.tokens_per_block * cp_size
+            total_blocks = math.ceil(len(tokens) / tokens_per_block)
+            if not info.is_state_group and count > total_blocks:
+                result.append([None] * count)
+                continue
+            first = total_blocks - count if info.blocks_per_window and not info.is_state_group else 0
+            group_hashes: list[str | None] = []
+            for index in range(count):
+                end = len(tokens) if info.is_state_group else min((first + index + 1) * tokens_per_block, len(tokens))
+                complete = end // hash_block_size
+                # Without one complete Request hash, retain the established
+                # fallback rather than inventing an incomplete cache identity.
+                if not complete:
+                    return None
+                digest = hashlib.sha256(b"d2rh-decode-host-cache-v2" + struct.pack(">IQ", group_id, end))
+                digest.update(bytes(block_hashes[complete - 1]))
+                for token_id in tokens[complete * hash_block_size : end]:
+                    digest.update(struct.pack(">q", int(token_id)))
+                if info.is_state_group:
+                    digest.update(struct.pack(">I", index))
+                group_hashes.append(digest.hexdigest())
+            result.append(group_hashes)
+        return tuple(result)
+
     def _d2rh_get_decode_block_hashes(
         self,
         request: "Request",
@@ -1824,6 +1882,9 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         response. The chained digest preserves correctness: a block can only
         hit when every token through that block endpoint is identical.
         """
+        endpoint_hashes = self._d2rh_get_decode_endpoint_hashes(request, remote_block_ids)
+        if endpoint_hashes is not None:
+            return endpoint_hashes
         token_ids = request.prompt_token_ids or []
         prompt_len = len(token_ids)
         token_bytes = np.asarray(token_ids, dtype=np.int64).tobytes()
