@@ -25,9 +25,10 @@ from vllm.logger import logger
 from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
 from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
 
-from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec
+from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec, AscendSlidingWindowMLASpec
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector import (
     GroupPull,
+    GroupTransferInfo,
     KVCacheSendingThread,
     KVCacheTaskTracker,
     MooncakeAgentMetadata,
@@ -1658,6 +1659,25 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 if isinstance(spec, AscendSlidingWindowMLASpec) and spec.model_version == "deepseek_v4":
                     return spec.block_size
         return self.vllm_config.cache_config.block_size
+
+    def _get_group_transfer_info(self, group: Any) -> GroupTransferInfo:
+        specs = self._get_group_unique_specs(group)
+        if specs and all(
+            isinstance(spec, AscendMLAAttentionSpec) and spec.model_version == "deepseek_v4" for spec in specs
+        ):
+            # DeepSeek-V4 specs already express block_size in logical tokens;
+            # storage_block_size accounts for compression inside the page.
+            # Multiplying by compress_ratio again drops most prompt pages and
+            # leaves their D-side destinations with stale KV after reuse.
+            block_sizes = {spec.block_size for spec in specs}
+            if len(block_sizes) != 1:
+                raise ValueError("D2RH compressed KV group has inconsistent logical block sizes")
+            return GroupTransferInfo(
+                tokens_per_block=block_sizes.pop(),
+                blocks_per_window=0,
+                is_state_group=False,
+            )
+        return super()._get_group_transfer_info(group)
 
     def _d2rh_prefix_fingerprint(self, request: "Request", end_token: int) -> bytes:
         """Stable-within-engine fingerprint for KV content through end_token.
