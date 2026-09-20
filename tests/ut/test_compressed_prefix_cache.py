@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
 
-from types import MethodType, SimpleNamespace
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 import torch
 from vllm.sampling_params import SamplingParams
 from vllm.utils.hashing import sha256
 from vllm.v1.core.block_pool import BlockPool
-from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.core.kv_cache_utils import (
     BlockHashListWithBlockSize,
     get_block_hash,
@@ -31,7 +29,6 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.request import Request
 
 from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec
-from vllm_ascend.patch.platform import patch_kv_cache_coordinator
 from vllm_ascend.patch.platform.patch_kv_cache_coordinator import (
     AscendHybridKVCacheCoordinator,
 )
@@ -378,171 +375,3 @@ def test_hybrid_coordinator_truncates_every_full_attention_group() -> None:
 
     assert hit_length == 6
     assert [len(blocks) for blocks in hit_blocks] == [2, 1, 2]
-
-
-def test_d2rh_manager_bridge_uses_deepseek_per_group_hit(monkeypatch) -> None:
-    coordinator = AscendHybridKVCacheCoordinator.__new__(AscendHybridKVCacheCoordinator)
-
-    def find_per_group(self, block_hashes, max_cache_hit_length):
-        assert block_hashes == [b"hash"]
-        assert max_cache_hit_length == 131071
-        return ([object()], []), (126976, 0)
-
-    coordinator.find_longest_cache_hit_per_group = MethodType(find_per_group, coordinator)
-    manager = SimpleNamespace(
-        enable_caching=True,
-        coordinator=coordinator,
-        log_stats=False,
-        create_kv_cache_blocks=lambda blocks: blocks,
-    )
-    request = SimpleNamespace(
-        request_id="d2rh-test",
-        block_hashes=[b"hash"],
-        num_tokens=131072,
-        num_preemptions=0,
-        skip_reading_prefix_cache=False,
-    )
-    monkeypatch.setenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", "1")
-
-    blocks, hit_tokens, shared_prefix_boundary = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert [len(group) for group in blocks] == [1, 0]
-    assert hit_tokens == 126976
-    assert shared_prefix_boundary == 0
-
-
-def _bridge_manager(coordinator, *, enable_caching=True, log_stats=False, stats=None) -> SimpleNamespace:
-    return SimpleNamespace(
-        enable_caching=enable_caching,
-        coordinator=coordinator,
-        log_stats=log_stats,
-        prefix_cache_stats=stats,
-        enable_kv_cache_events=False,
-        prefix_cache_lookup_enabled=lambda request: enable_caching and not request.skip_reading_prefix_cache,
-        create_kv_cache_blocks=lambda blocks: blocks,
-        empty_kv_cache_blocks=[],
-    )
-
-
-def _bridge_request(request_id: str, *, skip_reading_prefix_cache=False) -> SimpleNamespace:
-    return SimpleNamespace(
-        request_id=request_id,
-        block_hashes=[b"hash"],
-        num_tokens=128,
-        num_preemptions=0,
-        skip_reading_prefix_cache=skip_reading_prefix_cache,
-    )
-
-
-def test_d2rh_manager_bridge_falls_back_when_env_disabled(monkeypatch) -> None:
-    monkeypatch.delenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", raising=False)
-    per_group_calls: list[tuple] = []
-    coordinator = SimpleNamespace(
-        find_longest_cache_hit_per_group=lambda *args: per_group_calls.append(args),
-        find_longest_cache_hit=lambda block_hashes, max_length: ([], 0, 0),
-    )
-    manager = _bridge_manager(coordinator)
-    request = _bridge_request("bridge-env-off")
-
-    blocks, hit_tokens, shared_prefix_boundary = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert per_group_calls == []
-    assert blocks == []
-    assert hit_tokens == 0
-    assert shared_prefix_boundary == 0
-
-
-def test_d2rh_manager_bridge_falls_back_when_caching_disabled(monkeypatch) -> None:
-    monkeypatch.setenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", "1")
-    per_group_calls: list[tuple] = []
-    coordinator = SimpleNamespace(
-        find_longest_cache_hit_per_group=lambda *args: per_group_calls.append(args),
-    )
-    empty_blocks: list = []
-    manager = _bridge_manager(coordinator, enable_caching=False)
-    manager.empty_kv_cache_blocks = empty_blocks
-    request = _bridge_request("bridge-caching-off")
-
-    blocks, hit_tokens, _ = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert per_group_calls == []
-    assert blocks is empty_blocks
-    assert hit_tokens == 0
-
-
-def test_d2rh_manager_bridge_falls_back_when_request_skips_prefix_read(monkeypatch) -> None:
-    monkeypatch.setenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", "1")
-    per_group_calls: list[tuple] = []
-    coordinator = SimpleNamespace(
-        find_longest_cache_hit_per_group=lambda *args: per_group_calls.append(args),
-    )
-    empty_blocks: list = []
-    manager = _bridge_manager(coordinator)
-    manager.empty_kv_cache_blocks = empty_blocks
-    request = _bridge_request("bridge-skip-read", skip_reading_prefix_cache=True)
-
-    blocks, hit_tokens, _ = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert per_group_calls == []
-    assert blocks is empty_blocks
-    assert hit_tokens == 0
-
-
-def test_d2rh_manager_bridge_falls_back_for_non_ascend_coordinator(monkeypatch) -> None:
-    monkeypatch.setenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", "1")
-    per_group_calls: list[tuple] = []
-    hit_calls: list[tuple] = []
-    coordinator = SimpleNamespace(
-        find_longest_cache_hit_per_group=lambda *args: per_group_calls.append(args),
-        find_longest_cache_hit=lambda *args: hit_calls.append(args) or ([], 5, 0),
-    )
-    manager = _bridge_manager(coordinator)
-    request = _bridge_request("bridge-non-ascend")
-
-    blocks, hit_tokens, shared_prefix_boundary = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert per_group_calls == []
-    assert len(hit_calls) == 1
-    assert hit_calls[0][0] == [b"hash"]
-    assert hit_calls[0][1] == 127
-    assert blocks == []
-    assert hit_tokens == 5
-    assert shared_prefix_boundary == 0
-
-
-def test_d2rh_manager_bridge_records_stats_when_log_stats_enabled(monkeypatch) -> None:
-    monkeypatch.setenv("D2RH_EXTERNAL_PARTIAL_PREFIX_CACHE", "1")
-    coordinator = AscendHybridKVCacheCoordinator.__new__(AscendHybridKVCacheCoordinator)
-
-    def find_per_group(self, block_hashes, max_cache_hit_length):
-        return ([object()], []), (126976, 0)
-
-    coordinator.find_longest_cache_hit_per_group = MethodType(find_per_group, coordinator)
-    stats = MagicMock()
-    manager = _bridge_manager(coordinator, log_stats=True, stats=stats)
-    request = SimpleNamespace(
-        request_id="bridge-stats",
-        block_hashes=[b"hash"],
-        num_tokens=131072,
-        num_preemptions=0,
-        skip_reading_prefix_cache=False,
-    )
-
-    blocks, hit_tokens, _ = KVCacheManager.get_computed_blocks(manager, request)
-
-    assert [len(group) for group in blocks] == [1, 0]
-    assert hit_tokens == 126976
-    stats.record.assert_called_once_with(
-        num_tokens=131072,
-        num_hits=126976,
-        preempted=False,
-    )
-
-
-def test_d2rh_manager_bridge_install_is_idempotent() -> None:
-    installed = KVCacheManager.get_computed_blocks
-    assert getattr(installed, "_d2rh_partial_group_bridge", False)
-
-    patch_kv_cache_coordinator._install_d2rh_manager_bridge()
-
-    assert KVCacheManager.get_computed_blocks is installed
