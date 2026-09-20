@@ -136,7 +136,7 @@ def resolve_group_cache_slot_pairs(
 # ZMQ ports for D2RH (hop1) and scheduler ready signaling (hop1 done).
 # Layout matches side_channel_port + device_index used by KV handshake:
 #   port = BASE + dp_rank * tp_size * pp_size * pcp_size + (pp_rank + pcp_rank) * tp_size + tp_rank
-# TP=1 / DP0 / PP0 / PCP0 鈫?D2RH=8100, READY=8200 (same as legacy hardcoded values).
+# TP=1 / DP0 / PP0 / PCP0 -> D2RH=8100, READY=8200 (same as legacy hardcoded values).
 D2RH_ZMQ_PORT_BASE = 38100
 SCHEDULER_READY_ZMQ_PORT_BASE = 38200
 
@@ -1136,12 +1136,12 @@ class D2RHThread(threading.Thread):
                             length_list.append(inner_block_len * len(local_block_id))
 
             if src_list:
-                # 统计 batch_transfer_sync_read 调用耗时
+                # Track the latency of batch_transfer_sync_read.
                 _bt_start = time.perf_counter()
                 ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
                 _bt_end = time.perf_counter()
                 logger.info(
-                    "[batch_transfer_sync_read] 耗时: %.6f s, src_list 长度: %d, 总传输字节数: %d",
+                    "[batch_transfer_sync_read] elapsed: %.6f s, src_list length: %d, total bytes: %d",
                     _bt_end - _bt_start,
                     len(src_list),
                     sum(length_list),
