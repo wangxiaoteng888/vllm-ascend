@@ -306,6 +306,11 @@ class TestKVCacheRecvingThreadHop2:
         thread = object.__new__(d2rh.KVCacheRecvingThread)
         thread.remote_local_block_map = block_map_by_req
         thread.cpu_host = "127.0.0.1"
+        thread.kv_group2layeridx = {
+            0: ({"kv_cache_spec_type": "FullAttentionSpec"}, [0]),
+            1: ({"kv_cache_spec_type": "FullAttentionSpec"}, [1]),
+        }
+        thread.cpu_block_size_scale = [[1], [1]]
         # Match the worker state used by the full-block-map diagnostic path.
         thread.log_full_block_map = False
         # _handle_request records the H2D request mapping before delegating.
@@ -351,6 +356,16 @@ class TestKVCacheRecvingThreadHop2:
             d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
 
         assert mock_transfer.call_args.args[0]["remote_block_ids"] == ([7],)
+
+    def test_translates_kernel_ids_through_logical_host_blocks(self):
+        thread = self._thread({"remote-req": {(0, 10): 3}})
+        thread.cpu_block_size_scale[0] = [2]
+        req_meta = self._req_meta(remote_block_ids=([20, 21],))
+
+        with patch.object(d2rh.KVCacheRecvingThread, "_transfer_staged_kv_cache_all_groups") as mock_transfer:
+            d2rh.KVCacheRecvingThread._transfer_kv_cache_all_groups(thread, req_meta)
+
+        assert mock_transfer.call_args.args[0]["remote_block_ids"] == ([6, 7],)
 
     def test_missing_block_map_key_raises(self):
         thread = self._thread({"remote-req": {(0, 10): 3}})
@@ -455,6 +470,24 @@ class TestPrefixFingerprint:
         # is folded in and token changes are visible.
         assert digest != scheduler._d2rh_prefix_fingerprint(self._request([b"\xaa" * 32], [1, 2, 4]), 3)
 
+    @pytest.mark.parametrize("hash_source", ["prefill", "decode"])
+    def test_non_token_kv_identity_disables_host_cache(self, hash_source):
+        scheduler = self._scheduler()
+        request = SimpleNamespace(
+            request_id="req-with-salt",
+            block_hashes=[],
+            prompt_token_ids=[1, 2],
+            cache_salt="tenant-a",
+        )
+        remote_block_ids = ([10, 11],)
+
+        if hash_source == "prefill":
+            hashes = scheduler._d2rh_get_transfer_block_hashes(request, ([10, 11],), remote_block_ids)
+        else:
+            hashes = scheduler._d2rh_get_decode_block_hashes(request, remote_block_ids)
+
+        assert hashes == ([None, None],)
+
 
 class TestGetNumNewMatchedTokens:
     @staticmethod
@@ -498,7 +531,7 @@ class TestGetNumNewMatchedTokens:
         assert scheduler.get_num_new_matched_tokens(request, 40) == (None, False)
         assert params["num_computed_tokens"] == 40
 
-    def test_staging_full_discards_request_and_returns_none(self):
+    def test_staging_full_preserves_completed_rank_count_for_retry(self):
         scheduler = self._scheduler()
         scheduler._decode_tp_size = 1
         scheduler._prefill_tp_size = 2
@@ -534,7 +567,52 @@ class TestGetNumNewMatchedTokens:
 
         assert request.kv_transfer_params["num_computed_tokens"] == 0
         assert "req1" not in scheduler.all_requests
-        assert "req1" not in scheduler.listeningthread.ready_count
+        assert scheduler.listeningthread.ready_count["req1"] == 1
+
+
+class TestD2RHRetries:
+    def test_hop1_failure_notifies_scheduler_for_retry(self):
+        thread = object.__new__(d2rh.D2RHThread)
+        thread.transfer_workers = 1
+        thread._handle_request = MagicMock(side_effect=RuntimeError("transfer failed"))
+        thread.send_pull_status = MagicMock()
+
+        thread._handle_request_logged({"request_id": "req", "d2rh_enqueued_at": 0.0})
+
+        thread.send_pull_status.assert_called_once_with("req", d2rh.STAGING_FULL)
+
+    def test_duplicate_start_pull_is_idempotent(self):
+        class FakeSocket:
+            def __init__(self, frame):
+                self.frame = frame
+                self.sent = []
+
+            def recv_multipart(self):
+                if self.frame is None:
+                    raise KeyboardInterrupt
+                frame, self.frame = self.frame, None
+                return frame
+
+            def send_multipart(self, frames, flags=0):
+                self.sent.append((frames, flags))
+
+        params = {
+            "remote_block_ids": ([10],),
+            "group_pulls_by_port": [],
+        }
+        payload = d2rh.msgspec.msgpack.encode((d2rh.START_PULL, "req", params))
+        sock = FakeSocket([b"identity", b"", payload])
+        thread = object.__new__(d2rh.D2RHThread)
+        thread.remote_local_block_map = {"req": {(0, 10, 0): 3}}
+        thread.cpu_kvcache_manager = MagicMock()
+        thread.add_request = MagicMock()
+
+        with pytest.raises(KeyboardInterrupt):
+            thread.run_busy_loop(sock)
+
+        thread.cpu_kvcache_manager.alloc_sharded_block_map.assert_not_called()
+        thread.add_request.assert_not_called()
+        assert sock.sent[0][0][-1] == b"ACK"
 
 
 class TestRequestFinished:

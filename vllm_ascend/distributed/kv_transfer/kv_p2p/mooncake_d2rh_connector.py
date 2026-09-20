@@ -231,7 +231,6 @@ class HostListeningThread(threading.Thread):
                     )
                     with self.ready_lock:
                         self.all_requests.discard(request_id)
-                        self.ready_count.pop(request_id, None)
                     while True:
                         try:
                             sock.send_multipart((identity, b"", b"ACK"), flags=zmq.NOBLOCK)  # type: ignore
@@ -769,6 +768,13 @@ class D2RHThread(threading.Thread):
             self._handle_request(req_meta)
         except Exception as e:
             logger.exception("D2RH request processing failed: %s", e)
+            try:
+                self.send_pull_status(req_meta["request_id"], STAGING_FULL)
+            except Exception as notify_error:
+                logger.exception(
+                    "Failed to notify scheduler of D2RH request failure: %s",
+                    notify_error,
+                )
         finally:
             total_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
@@ -819,33 +825,39 @@ class D2RHThread(threading.Thread):
                             if raw_block_hashes is not None
                             else None
                         )
-                        allocation = self.cpu_kvcache_manager.alloc_sharded_block_map(
-                            remote_block_ids,
-                            params["group_pulls_by_port"],
-                            block_hashes,
-                        )
-                        if allocation is None:
-                            pull_ack = STAGING_FULL
-                        else:
-                            block_map, cache_hits, cacheable_misses = allocation
-                            remote_request_id = params.get("remote_request_id", request_id)
-                            self.remote_local_block_map[request_id] = block_map
-                            self.remote_local_block_map[remote_request_id] = block_map
-                            self.add_request(
-                                request_id=request_id,
-                                remote_request_id=remote_request_id,
-                                remote_host=params["remote_host"],
-                                remote_engine_id=params["remote_engine_id"],
-                                remote_port=params["remote_port"],
-                                remote_multi_nodes_meta_mapping=params.get("remote_multi_nodes_meta_mapping"),
-                                remote_block_ids=remote_block_ids,
-                                remote_handshake_ports=params["remote_handshake_ports"],
-                                group_pulls_by_port=params["group_pulls_by_port"],
-                                remote_port_send_num=params.get("remote_port_send_num"),
-                                num_computed_tokens=params.get("num_computed_tokens", 0),
-                                cache_hits=cache_hits,
-                                cacheable_misses=cacheable_misses,
+                        if request_id in self.remote_local_block_map:
+                            logger.debug(
+                                "D2RH START_PULL retry for already accepted request %s",
+                                request_id,
                             )
+                        else:
+                            allocation = self.cpu_kvcache_manager.alloc_sharded_block_map(
+                                remote_block_ids,
+                                params["group_pulls_by_port"],
+                                block_hashes,
+                            )
+                            if allocation is None:
+                                pull_ack = STAGING_FULL
+                            else:
+                                block_map, cache_hits, cacheable_misses = allocation
+                                remote_request_id = params.get("remote_request_id", request_id)
+                                self.remote_local_block_map[request_id] = block_map
+                                self.remote_local_block_map[remote_request_id] = block_map
+                                self.add_request(
+                                    request_id=request_id,
+                                    remote_request_id=remote_request_id,
+                                    remote_host=params["remote_host"],
+                                    remote_engine_id=params["remote_engine_id"],
+                                    remote_port=params["remote_port"],
+                                    remote_multi_nodes_meta_mapping=params.get("remote_multi_nodes_meta_mapping"),
+                                    remote_block_ids=remote_block_ids,
+                                    remote_handshake_ports=params["remote_handshake_ports"],
+                                    group_pulls_by_port=params["group_pulls_by_port"],
+                                    remote_port_send_num=params.get("remote_port_send_num"),
+                                    num_computed_tokens=params.get("num_computed_tokens", 0),
+                                    cache_hits=cache_hits,
+                                    cacheable_misses=cacheable_misses,
+                                )
                     except Exception as e:
                         # Release any partially created mapping to prevent CPU
                         # staging leaks on handshake/queueing failures.
@@ -1057,6 +1069,10 @@ class D2RHThread(threading.Thread):
                     # already compacted miss list.
                     remote_block_token_size = self.block_size * self.group_compress_ratios[group_id]
                     remote_start_block = req_meta.get("num_computed_tokens", 0) // remote_block_token_size
+                    skipped_remote_block_ids = remote_group_block_ids[:remote_start_block]
+                    cacheable_misses = req_meta.get("cacheable_misses", {})
+                    for remote_id in skipped_remote_block_ids:
+                        cacheable_misses.pop((group_id, remote_id, remote_tp_offset), None)
                     remote_group_block_ids = remote_group_block_ids[remote_start_block:]
                     local_group_block_ids = local_group_block_ids[remote_start_block:]
                 if cache_hits:
@@ -1183,18 +1199,21 @@ class D2RHThread(threading.Thread):
             if sock is not None:
                 self._return_remote_socket(sock, remote_host, remote_handshake_port)
 
-    def send_pull_done(self, request_id: str) -> None:
+    def send_pull_status(self, request_id: str, status: bytes) -> None:
         sock: zmq.Socket | None = None  # type: ignore[name-defined]
         try:
             sock = self._get_remote_socket(self.host_ip, self.scheduler_ready_port)
             scheduler_path = f"{self.host_ip}:{self.scheduler_ready_port}"
-            ensure_zmq_send(sock, self.encoder.encode((READY_SCHEDULER, request_id)), scheduler_path)
+            ensure_zmq_send(sock, self.encoder.encode((status, request_id)), scheduler_path)
             resp = self._recv_from_socket(sock, scheduler_path)
             if resp != b"ACK":
                 raise RuntimeError(f"Failed to receive ACK, resp: {resp.decode('utf-8')}")
         finally:
             if sock is not None:
                 self._return_remote_socket(sock, self.host_ip, self.scheduler_ready_port)
+
+    def send_pull_done(self, request_id: str) -> None:
+        self.send_pull_status(request_id, READY_SCHEDULER)
 
     def _get_remote_socket(self, remote_host: str, remote_handshake_port: int) -> zmq.Socket:  # type: ignore[name-defined]
         remote_path = make_zmq_path("tcp", remote_host, remote_handshake_port)
@@ -1279,17 +1298,23 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
         for group_id, group_block_ids in enumerate(remote_block_ids):
             group_remote_tp_offset = offset_by_group.get(group_id, 0)
             mapped_group_block_ids: list[int] = []
-            for block_id in group_block_ids:
-                key_with_offset = (group_id, block_id, group_remote_tp_offset)
-                key_legacy = (group_id, block_id)
+            group_spec, layer_indices = self.kv_group2layeridx[group_id]
+            is_mamba_group = group_spec["kv_cache_spec_type"] == "MambaSpec"
+            host_scale = 1 if is_mamba_group else self.cpu_block_size_scale[layer_indices[0]][0]
+            for kernel_block_id in group_block_ids:
+                logical_block_id, kernel_offset = divmod(kernel_block_id, host_scale)
+                key_with_offset = (group_id, logical_block_id, group_remote_tp_offset)
+                key_legacy = (group_id, logical_block_id)
                 if key_with_offset in block_map:
-                    mapped_group_block_ids.append(block_map[key_with_offset])
+                    host_logical_block_id = block_map[key_with_offset]
                 elif key_legacy in block_map:
-                    mapped_group_block_ids.append(block_map[key_legacy])
+                    host_logical_block_id = block_map[key_legacy]
                 else:
                     raise RuntimeError(
-                        f"CPU staging block map missing key {(group_id, block_id)} for request {remote_request_id}."
+                        f"CPU staging block map missing key {(group_id, logical_block_id)} "
+                        f"for request {remote_request_id}."
                     )
+                mapped_group_block_ids.append(host_logical_block_id * host_scale + kernel_offset)
             cpu_remote_block_ids_groups.append(mapped_group_block_ids)
         cpu_remote_block_ids: BlockIds = tuple(cpu_remote_block_ids_groups)
         cpu_req_meta = dict(req_meta)
@@ -1678,6 +1703,15 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
             digest.update(struct.pack(">q", int(token_id)))
         return digest.digest()
 
+    @staticmethod
+    def _d2rh_has_non_token_kv_identity(request: "Request") -> bool:
+        return bool(
+            getattr(request, "lora_request", None) is not None
+            or getattr(request, "cache_salt", None) is not None
+            or getattr(request, "mm_features", None)
+            or getattr(request, "prompt_embeds", None) is not None
+        )
+
     def _d2rh_get_transfer_block_hashes(
         self,
         request: "Request",
@@ -1685,6 +1719,12 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         remote_block_ids: BlockIds,
     ) -> tuple[list[str | None], ...]:
         """Build hashes aligned exactly with request_finished remote blocks."""
+        if self._d2rh_has_non_token_kv_identity(request):
+            logger.debug(
+                "Disabling D2RH host content cache for request %s with non-token KV identity",
+                request.request_id,
+            )
+            return tuple([None] * len(group) for group in remote_block_ids)
         prompt_len = len(request.prompt_token_ids or [])
         cp_size = max(1, self.pcp_size * self.dcp_size)
         result: list[list[str | None]] = []
@@ -1738,6 +1778,12 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         response. The chained digest preserves correctness: a block can only
         hit when every token through that block endpoint is identical.
         """
+        if self._d2rh_has_non_token_kv_identity(request):
+            logger.debug(
+                "Disabling D2RH host content cache for request %s with non-token KV identity",
+                request.request_id,
+            )
+            return tuple([None] * len(group) for group in remote_block_ids)
         token_ids = request.prompt_token_ids or []
         prompt_len = len(token_ids)
         token_bytes = np.asarray(token_ids, dtype=np.int64).tobytes()
@@ -1983,7 +2029,6 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 if got_staging_full:
                     with self.listeningthread.ready_lock:
                         self.all_requests.discard(request.request_id)
-                        self.listeningthread.ready_count.pop(request.request_id, None)
                     return None, False  # type: ignore[return-value]
                 self.all_requests.add(request.request_id)
 

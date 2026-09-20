@@ -137,3 +137,13 @@ class PlannerTests(unittest.TestCase):
         d2rh.D2RHThread._transfer_kv_cache_all_groups(self.worker, self.prepare_transfer(host_hit=True))
         self.assertEqual(self.calls, [])
         self.assertEqual(len(self.releases), 2)
+
+    def test_hbm_prefix_blocks_are_not_committed_to_host_cache(self):
+        req = self.prepare_transfer()
+        req["num_computed_tokens"] = 32
+        req["cacheable_misses"] = {(0, 1, 0): (0, 0, b"content")}
+
+        d2rh.D2RHThread._transfer_kv_cache_all_groups(self.worker, req)
+
+        self.assertEqual(req["cacheable_misses"], {})
+        self.assertEqual(self.calls, [])
