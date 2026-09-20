@@ -1946,22 +1946,22 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
     def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int, bool]:
         params = request.kv_transfer_params
         if params is not None and params.get("do_remote_prefill"):
-            block_hashes = request.block_hashes
-            first_hash = bytes(block_hashes[0]).hex()[:16] if block_hashes else "none"
-            probe_idx = min(len(block_hashes) - 1, int(len(block_hashes) * 0.90))
-            probe_hash = bytes(block_hashes[probe_idx]).hex()[:16] if probe_idx >= 0 else "none"
-            logger.info(
-                "D2RH_HBM_QUERY request_id=%s local_hit_tokens=%d request_hashes=%d hash0=%s hash90=%s",
-                request.request_id,
-                num_computed_tokens,
-                len(block_hashes),
-                first_hash,
-                probe_hash,
-            )
             # START_PULL serializes a copy of params. Publish the D-local
             # prefix hit before that message is built and sent.
             params["num_computed_tokens"] = num_computed_tokens
             if request.request_id not in self.all_requests:
+                block_hashes = request.block_hashes
+                first_hash = bytes(block_hashes[0]).hex()[:16] if block_hashes else "none"
+                probe_idx = min(len(block_hashes) - 1, int(len(block_hashes) * 0.90))
+                probe_hash = bytes(block_hashes[probe_idx]).hex()[:16] if probe_idx >= 0 else "none"
+                logger.info(
+                    "D2RH_HBM_QUERY request_id=%s local_hit_tokens=%d request_hashes=%d hash0=%s hash90=%s",
+                    request.request_id,
+                    num_computed_tokens,
+                    len(block_hashes),
+                    first_hash,
+                    probe_hash,
+                )
                 got_staging_full = False
                 decode_block_hashes = None
                 if self.host_cache_hash_source == "decode":

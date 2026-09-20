@@ -498,6 +498,45 @@ class TestGetNumNewMatchedTokens:
         assert scheduler.get_num_new_matched_tokens(request, 40) == (None, False)
         assert params["num_computed_tokens"] == 40
 
+    def test_hbm_query_is_logged_once_per_request(self):
+        scheduler = self._scheduler()
+        scheduler._decode_tp_size = 1
+        scheduler._prefill_tp_size = 2
+        scheduler._prefill_pp_size = 1
+        scheduler.num_key_value_heads = 4
+        scheduler.is_deepseek_mla = False
+        scheduler.use_sparse = False
+        scheduler.tp_size = 2
+        scheduler.kv_cache_groups = []
+        scheduler.vllm_config = SimpleNamespace()
+        scheduler._send_start_pull = lambda request_id, params, port: b"ACK"
+        request = self._request(
+            {
+                "do_remote_prefill": True,
+                "remote_request_id": "remote-req",
+                "remote_port": 30000,
+                "remote_host": "p-host",
+                "remote_engine_id": "p-engine",
+                "remote_block_ids": ([1, 2],),
+            }
+        )
+
+        with (
+            patch.object(d2rh, "get_d2rh_zmq_port", return_value=38100),
+            patch.object(d2rh, "get_remote_ranks_for_req", return_value=[[0]]),
+            patch.object(
+                d2rh,
+                "resolve_remote_host_for_handshake_port",
+                side_effect=lambda *args: ("p-host", "p-engine"),
+            ),
+            patch.object(d2rh.logger, "info") as info_log,
+        ):
+            assert scheduler.get_num_new_matched_tokens(request, 0) == (100, True)
+            assert scheduler.get_num_new_matched_tokens(request, 0) == (100, True)
+
+        hbm_logs = [call for call in info_log.call_args_list if call.args[0].startswith("D2RH_HBM_QUERY")]
+        assert len(hbm_logs) == 1
+
     def test_staging_full_discards_request_and_returns_none(self):
         scheduler = self._scheduler()
         scheduler._decode_tp_size = 1
