@@ -72,11 +72,9 @@ READY_SCHEDULER = b"ready_scheduler"
 STAGING_FULL = b"staging_full"
 START_PULL = b"START_PULL"
 
-# 2 MB huge-page granularity.  D2H (device-to-host) transfers on Ascend require
-# the registered host memory size to be 2M-aligned so that UBMem uses 2M huge
-# pages instead of falling back to 4K small pages.  aclrtMallocHost (used by
-# torch pin_memory) already tries to back the allocation with 2M huge pages;
-# pairing that with a 2M-aligned size lets UBMem operate in 2M-page mode.
+# Ascend D2H registration requires 2 MiB-aligned host ranges so UBMem can use
+# huge pages. torch pin_memory uses aclrtMallocHost, and rounding the allocation
+# size preserves huge-page registration.
 HUGEPAGE_SIZE_2M = 2 * 1024 * 1024
 
 StagingBlockKey = tuple[int, int, int]
@@ -133,10 +131,10 @@ def resolve_group_cache_slot_pairs(
     return result
 
 
-# ZMQ ports for D2RH (hop1) and scheduler ready signaling (hop1 done).
-# Layout matches side_channel_port + device_index used by KV handshake:
-#   port = BASE + dp_rank * tp_size * pp_size * pcp_size + (pp_rank + pcp_rank) * tp_size + tp_rank
-# TP=1 / DP0 / PP0 / PCP0 -> D2RH=8100, READY=8200 (same as legacy hardcoded values).
+# Offset each ZMQ endpoint by the flattened parallel rank to prevent port
+# collisions between DP, TP, PP, and PCP workers:
+# port = BASE + dp_rank * tp_size * pp_size * pcp_size
+#        + (pp_rank + pcp_rank) * tp_size + tp_rank
 D2RH_ZMQ_PORT_BASE = 38100
 SCHEDULER_READY_ZMQ_PORT_BASE = 38200
 
@@ -181,10 +179,8 @@ class HostListeningThread(threading.Thread):
     def run(self):
         """Run the thread to handle KV cache transfer requests."""
         try:
-            # Listen for new requests for metadata. NOTE(rob): we need each rank
-            # to have a unique port. This hack to keeps us moving. We will
-            # switch when moving to etcd or where we have a single ZMQ socket in
-            # the scheduler.
+            # Each rank listens on its own endpoint to avoid routing metadata
+            # requests through a shared scheduler socket.
             handshake_port = self.scheduler_ready_port
             path = make_zmq_path("tcp", self.host_ip, handshake_port)
             logger.info("Starting scheduler ready listener on path: %s", path)
@@ -194,11 +190,6 @@ class HostListeningThread(threading.Thread):
             logger.exception("Mooncake KVCacheSendingThread exception: %s", e)
 
     def run_busy_loop(self, sock: zmq.Socket):  # type: ignore
-        # encoder = msgspec.msgpack.Encoder()
-        # encoded_data = encoder.encode(self.metadata)
-        # size_in_bytes = len(encoded_data)
-        # logger.debug("Size of encoded MooncakeAgentMetadata: %s bytes", str(size_in_bytes))
-
         decoder = msgspec.msgpack.Decoder(type=tuple)
         while True:
             try:
@@ -473,7 +464,7 @@ class D2RHCPUCacheManager:
         self.enable_host_cache = enable_host_cache
         self.free_queue = deque(range(num_blocks))
         self.used_set: set[int] = set()
-        # Valid entries are retained after a request finishes.  OrderedDict
+        # Valid entries are retained after a request finishes. OrderedDict
         # order is LRU (oldest first). Pending entries are never exposed as
         # hits, which keeps concurrent requests from reading half-filled host
         # blocks.
@@ -1136,7 +1127,6 @@ class D2RHThread(threading.Thread):
                             length_list.append(inner_block_len * len(local_block_id))
 
             if src_list:
-                # Track the latency of batch_transfer_sync_read.
                 _bt_start = time.perf_counter()
                 ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
                 _bt_end = time.perf_counter()
@@ -1322,13 +1312,11 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
         remote_engine_id = req_meta["remote_engine_id"]
         remote_host = req_meta["remote_host"]
         remote_handshake_port = req_meta["remote_handshake_port"]
-        # Full prefix cache hit: do not need to read remote blocks, just notify
-        # P worker that we have the blocks we need.
+        # A full prefix hit only requires notifying the P worker.
         num_local_blocks = sum(len(group_block_ids) for group_block_ids in local_block_ids)
         if num_local_blocks == 0 and not has_replicate_k_blocks:
             return
 
-        # Check if we have the remote metadata cached.
         with self.remote_metadata_lock:
             has_remote_metadata = (
                 remote_engine_id in self.kv_caches_base_addr
@@ -1422,8 +1410,8 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
                 grouped_local_block_ids: list[list[int]] = []
                 if has_group_blocks:
                     is_group_transfer_end = group_pull.is_group_transfer_end
-                    # Block ids are already expanded to kernel granularity and truncated in
-                    # _get_kv_split_metadata, so consume them directly here.
+                    # Block IDs are expanded to kernel granularity and truncated
+                    # in _get_kv_split_metadata.
                     kernel_remote_block_ids = remote_group_block_ids
                     kernel_local_block_ids = local_group_block_ids
 
@@ -2010,7 +1998,6 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
             with self.listeningthread.ready_lock:
                 if request.request_id not in self.listeningthread.ready_request:
                     return None, False  # type: ignore[return-value]
-                # self.all_requests.remove(request.request_id)
                 token_ids = request.prompt_token_ids or []
                 actual = self._state_prefill_token_count(len(token_ids))
                 params["num_computed_tokens"] = num_computed_tokens
@@ -2102,7 +2089,7 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             register_regions.ptrs,
             register_regions.lengths,
         )
-        # After KV Caches registered, start the sending or receiving thread.
+        # Start the role-specific transfer thread after cache registration.
         metadata = MooncakeAgentMetadata(
             engine_id=self.engine_id,
             te_rpc_port=self.te_rpc_port,
@@ -2352,6 +2339,5 @@ class MooncakeConnector(BaseMooncakeConnector):
             )
 
 
-# External connector loading resolves the class by the configured connector
-# name, while in-tree registration points directly at ``MooncakeConnector``.
+# Preserve the configured connector name for external plugin loading.
 MooncakeD2RHConnector = MooncakeConnector
