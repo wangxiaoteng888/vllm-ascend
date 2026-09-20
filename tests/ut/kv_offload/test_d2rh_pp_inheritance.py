@@ -112,10 +112,10 @@ def test_registration_preserves_layout_and_d2rh_owns_host_regions(worker_cls, ro
         if worker_cls is d2rh.MooncakeConnectorWorker and role == "kv_consumer":
             assert allocate.call_count == 1
             assert len(worker.cpu_caches_hold) == 1
-            assert len(set(worker.cpu_kv_caches_base_addr[22])) == 3
-            assert worker.cpu_block_stride_per_addr[22] == [24, 8, 24]
+            assert len(set(worker.cpu_kv_caches_base_addr[22])) == 2
+            assert worker.cpu_block_stride_per_addr[22] == [24, 24, 24]
             assert worker.cpu_block_size_scale[22] == [2, 2, 2]
-            assert worker._cpu_register_lengths == [d2rh.HUGEPAGE_SIZE_2M * 3]
+            assert worker._cpu_register_lengths == [d2rh.HUGEPAGE_SIZE_2M * 2]
             assert worker._cpu_register_ptrs[0] % d2rh.HUGEPAGE_SIZE_2M == 0
             assert register.call_args.args[0][-1:] == worker._cpu_register_ptrs
             assert register.call_args.args[1][-1:] == worker._cpu_register_lengths

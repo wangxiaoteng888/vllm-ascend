@@ -42,6 +42,17 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "does not contain layer"):
             self.worker._get_hop1_layer_pairs(self.spec, [0, 1], {"layer.0": 0})
 
+    def test_shared_metadata_layer_is_transferred_once(self):
+        spec = {"layer_names": ["indexer", "attention", "next"]}
+        self.assertEqual(
+            self.worker._get_hop1_layer_pairs(spec, [0, 0, 1], {"indexer": 7, "attention": 7, "next": 8}),
+            [(0, 7), (1, 8)],
+        )
+
+    def test_legacy_duplicate_metadata_layer_is_transferred_once(self):
+        self.worker.vllm_config.kv_transfer_config.get_from_extra_config = lambda *args: {"pp_size": 1}
+        self.assertEqual(self.worker._get_hop1_layer_pairs({}, [1, 1, 0], {}), [(1, 1), (0, 0)])
+
     def test_misaligned_names_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "misaligned"):
             self.worker._get_hop1_layer_pairs(self.spec, [0], {"layer.0": 0})
@@ -126,12 +137,52 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(self.releases, [])
 
+    def test_full_hop1_shared_layer_keeps_all_distinct_slots(self):
+        req = self.prepare_transfer()
+        w = self.worker
+        self.spec["layer_names"] = ["layer.0", "indexer.0", "layer.1"]
+        self.spec["layer_cache_indices"] = {"layer.0": [0], "indexer.0": [1], "layer.1": [0]}
+        w.kv_group2layeridx[0] = (self.spec, [0, 0, 1])
+        w.cpu_kv_caches_base_addr[0] = [1000, 1100]
+        w.cpu_block_len_per_addr[0] = [8, 8]
+        w.cpu_block_stride_per_addr[0] = [16, 16]
+        w.cpu_block_size_scale[0] = [1, 1]
+        w.kv_caches_base_addr["e"][10] = [[3000, 3100]]
+        w.remote_block_stride_per_addr["e"][10] = [[32, 32]]
+        w.remote_block_size_scale["e"][10] = [[1, 1]]
+        w.remote_kv_group2layeridx["e"][10][0] = (
+            {"layer_names": ["layer.0", "indexer.0"], "layer_cache_indices": {"layer.0": [0], "indexer.0": [1]}},
+            [0, 0],
+        )
+        w.remote_kv_group2layeridx["e"][11][0][0]["layer_cache_indices"] = {"layer.1": [0]}
+        d2rh.D2RHThread._transfer_kv_cache_all_groups(w, req)
+        self.assertEqual(
+            self.calls,
+            [("host:1010", [1048, 1148], [3032, 3132], [8, 8]), ("host:1011", [2048], [4064], [8])],
+        )
+
     def test_missing_stage_rejected_before_transfer(self):
         req = self.prepare_transfer(missing=True)
         with self.assertRaisesRegex(RuntimeError, "Incomplete D2RH PP layer coverage"):
             d2rh.D2RHThread._transfer_kv_cache_all_groups(self.worker, req)
         self.assertEqual(self.calls, [])
         self.assertEqual(self.releases, [])
+
+    def test_hop1_packed_view_covers_aliased_component(self):
+        req = self.prepare_transfer()
+        w = self.worker
+        self.spec["layer_cache_indices"] = {"layer.0": [0, 1], "layer.1": [0]}
+        w.cpu_kv_caches_base_addr[0] = [1000, 1000]
+        w.cpu_block_len_per_addr[0] = [8, 16]
+        w.cpu_block_stride_per_addr[0] = [16, 16]
+        w.cpu_block_size_scale[0] = [1, 1]
+        w.kv_caches_base_addr["e"][10] = [[3000, 3000]]
+        w.remote_block_size_scale["e"][10] = [[1, 1]]
+        w.remote_block_stride_per_addr["e"][10] = [[32, 32]]
+        w.remote_kv_group2layeridx["e"][10][0][0]["layer_cache_indices"] = {"layer.0": [0, 1]}
+        w.remote_kv_group2layeridx["e"][11][0][0]["layer_cache_indices"] = {"layer.1": [0]}
+        d2rh.D2RHThread._transfer_kv_cache_all_groups(w, req)
+        self.assertEqual(self.calls, [("host:1010", [1048], [3032], [16]), ("host:1011", [2048], [4064], [8])])
 
     def test_host_hit_skips_both_stage_reads(self):
         d2rh.D2RHThread._transfer_kv_cache_all_groups(self.worker, self.prepare_transfer(host_hit=True))
