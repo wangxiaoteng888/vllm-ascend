@@ -132,6 +132,44 @@ def resolve_group_cache_slot_pairs(
     return result
 
 
+def _get_non_redundant_cache_slot_pairs(
+    pairs: list[tuple[int, int]],
+    local_addrs: list[int],
+    remote_addrs: list[int],
+    block_lengths: list[int],
+    local_strides: list[int],
+    remote_strides: list[int],
+    num_group_pulls: int,
+) -> list[tuple[int, int]]:
+    """Omit views fully covered by another selected view on both peers.
+
+    Alias offsets and strides must agree for every block. Keep TP-sharded
+    components unchanged because their byte offsets need not scale equally.
+    """
+    if num_group_pulls != 1:
+        return pairs
+    result = []
+    for position, (local, remote) in enumerate(pairs):
+        covered = False
+        for other_position, (other_local, other_remote) in enumerate(pairs):
+            if other_position == position:
+                continue
+            delta = local_addrs[local] - local_addrs[other_local]
+            if (
+                delta >= 0
+                and delta == remote_addrs[remote] - remote_addrs[other_remote]
+                and local_strides[local] == local_strides[other_local]
+                and remote_strides[remote] == remote_strides[other_remote]
+                and delta + block_lengths[local] <= block_lengths[other_local]
+                and (block_lengths[local] < block_lengths[other_local] or other_position < position)
+            ):
+                covered = True
+                break
+        if not covered:
+            result.append((local, remote))
+    return result
+
+
 # Offset each ZMQ endpoint by the flattened parallel rank to prevent port
 # collisions between DP, TP, PP, and PCP workers:
 # port = BASE + dp_rank * tp_size * pp_size * pcp_size
@@ -922,7 +960,7 @@ class D2RHThread(threading.Thread):
         if not remote_layer_name_to_idx or not layer_names:
             if pp_size > 1:
                 raise RuntimeError("D2RH prefill PP requires cache layer names in the handshake metadata.")
-            return [(idx, idx) for idx in layer_indices]
+            return [(idx, idx) for idx in dict.fromkeys(layer_indices)]
         if len(layer_names) != len(layer_indices):
             raise RuntimeError("D2RH local cache layer names and indices are misaligned.")
         pairs = []
@@ -931,7 +969,9 @@ class D2RHThread(threading.Thread):
                 continue
             remote_idx = resolve_remote_layer_idx(layer_idx, group_spec, layer_indices, remote_layer_name_to_idx)
             pairs.append((layer_idx, remote_idx))
-        return pairs
+        # Multiple cache names can share one metadata layer. Slot resolution
+        # already collects all of that layer's components, so transfer it once.
+        return list(dict.fromkeys(pairs))
 
     def _transfer_kv_cache_all_groups(self, req_meta: dict[str, Any]) -> None:
         remote_request_id = req_meta["remote_request_id"]
@@ -1106,6 +1146,15 @@ class D2RHThread(threading.Thread):
                         remote_cache_slots,
                         len(self.cpu_kv_caches_base_addr[layer_idx]),
                         len(remote_base_addrs[remote_layer_idx]),
+                    )
+                    cache_pairs = _get_non_redundant_cache_slot_pairs(
+                        cache_pairs,
+                        self.cpu_kv_caches_base_addr[layer_idx],
+                        remote_base_addrs[remote_layer_idx],
+                        self.cpu_block_len_per_addr[layer_idx],
+                        self.cpu_block_stride_per_addr[layer_idx],
+                        remote_block_stride_per_addr[remote_layer_idx],
+                        num_group_pulls,
                     )
                     for cache_idx, remote_cache_idx in cache_pairs:
                         src_layer_base_addr = self.cpu_kv_caches_base_addr[layer_idx][cache_idx]
@@ -1392,7 +1441,9 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
             group_spec, layer_indices = self.kv_group2layeridx[group_idx]
             kv_cache_group_id = group_spec.get("kv_cache_group_id", group_idx)
             raw_layer_indices = layer_indices
-            layer_indices = pp_layer_indices(layer_indices, group_pull.prefill_pp_rank, group_spec)
+            # Preserve the original name/index alignment for slot resolution,
+            # but transfer and reformat each metadata layer only once.
+            layer_indices = list(dict.fromkeys(pp_layer_indices(layer_indices, group_pull.prefill_pp_rank, group_spec)))
 
             if not layer_indices:
                 continue
@@ -1509,6 +1560,15 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
                     len(local_kv_caches_base_addrs[layer_idx]),
                     len(remote_kv_caches_base_addrs[remote_layer_idx]),
                 )
+                cache_pairs = _get_non_redundant_cache_slot_pairs(
+                    cache_pairs,
+                    local_kv_caches_base_addrs[layer_idx],
+                    remote_kv_caches_base_addrs[remote_layer_idx],
+                    self.block_len_per_addr[layer_idx],
+                    self.block_stride_per_addr[layer_idx],
+                    remote_block_stride_per_addr[remote_layer_idx],
+                    tp_num_need_pulls,
+                )
                 for cache_idx, remote_cache_idx in cache_pairs:
                     src_layer_base_addr = local_kv_caches_base_addrs[layer_idx][cache_idx]
                     dst_layer_base_addr = remote_kv_caches_base_addrs[remote_layer_idx][remote_cache_idx]
@@ -1560,6 +1620,7 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
             dst_list,
             length_list,
         )
+        transfer_start_time = time.perf_counter()
         ret = self.engine.batch_transfer_sync_read(session_id, src_list, dst_list, length_list)
         if ret < 0:
             logger.error(
@@ -1572,12 +1633,17 @@ class KVCacheRecvingThread(BaseKVCacheRecvingThread):
         req_end_time = time.perf_counter()
         req_transfer_elapsed = (req_end_time - req_start_time) * 1000
         logger.info(
-            "KV cache transfer for request %s took %.2f ms. local_ip %s local_device_id %s remote_session_id %s",
+            "KV cache transfer for request %s took %.2f ms. local_ip %s local_device_id %s remote_session_id %s "
+            "plan_ms=%.2f engine_ms=%.2f descriptors=%d bytes=%d",
             remote_request_id,
             req_transfer_elapsed,
             get_ip(),
             self.tp_rank,
             session_id,
+            (transfer_start_time - req_start_time) * 1000,
+            (req_end_time - transfer_start_time) * 1000,
+            len(src_list),
+            sum(length_list),
         )
 
         ready_attention_group_reformat_block_ids = []
@@ -2194,17 +2260,54 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         )
 
     def _make_cpu_staging_caches(self, kv_caches: dict[str, torch.Tensor]) -> dict[str, list[torch.Tensor]]:
-        """Create all CPU staging tensors inside one 2 MiB-aligned pinned arena."""
+        """Create pinned staging, preserving aliases within each named cache.
+
+        Different names can belong to independent cache groups and use different
+        staging block IDs. Never merge their allocations, even if HBM is aliased.
+        """
         cpu_caches: dict[str, list[torch.Tensor]] = {}
-        cache_layout: list[tuple[str, torch.Tensor, int, int]] = []
+        cache_layout: list[tuple[str, torch.Tensor, int]] = []
+        # TP/CP shards can pack subviews differently. Preserve their established
+        # independent staging layout until alias-compatible sharding is defined.
+        preserve_aliases = (
+            self._prefill_tp_size == self.tp_size == 1
+            and getattr(self, "pcp_size", 1) == 1
+            and getattr(self, "dcp_size", 1) == 1
+        )
         arena_size = 0
         for layer_name, kv_cache_tuple in kv_caches.items():
             cpu_caches[layer_name] = []
-            for cache in self._as_kv_cache_tuple(kv_cache_tuple):
-                raw_size = cache.numel() * cache.element_size()
-                aligned_size = ((raw_size + HUGEPAGE_SIZE_2M - 1) // HUGEPAGE_SIZE_2M) * HUGEPAGE_SIZE_2M
-                cache_layout.append((layer_name, cache, arena_size, raw_size))
-                arena_size += aligned_size
+            caches = self._as_kv_cache_tuple(kv_cache_tuple)
+            if not preserve_aliases:
+                for cache in caches:
+                    cache_layout.append((layer_name, cache, arena_size))
+                    raw_size = cache.numel() * cache.element_size()
+                    arena_size += ((raw_size + HUGEPAGE_SIZE_2M - 1) // HUGEPAGE_SIZE_2M) * HUGEPAGE_SIZE_2M
+                continue
+            regions: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+            for index, cache in enumerate(caches):
+                regions[cache.untyped_storage().data_ptr()].append(
+                    (cache.data_ptr(), self._tensor_span_end(cache), index)
+                )
+            offsets = {}
+            for intervals in regions.values():
+                merged: list[tuple[int, int, list[int]]] = []
+                for start, end, index in sorted(intervals):
+                    if merged and start < merged[-1][1]:
+                        previous_start, previous_end, indices = merged[-1]
+                        merged[-1] = (previous_start, max(previous_end, end), indices + [index])
+                    else:
+                        merged.append((start, end, [index]))
+                for start, end, indices in merged:
+                    alignment = max(caches[index].element_size() for index in indices)
+                    start -= start % alignment
+                    for index in indices:
+                        offsets[index] = arena_size + caches[index].data_ptr() - start
+                    raw_size = end - start
+                    aligned_size = ((raw_size + HUGEPAGE_SIZE_2M - 1) // HUGEPAGE_SIZE_2M) * HUGEPAGE_SIZE_2M
+                    arena_size += aligned_size
+            for index, cache in enumerate(caches):
+                cache_layout.append((layer_name, cache, offsets[index]))
 
         self._cpu_register_ptrs = []
         self._cpu_register_lengths = []
@@ -2224,9 +2327,14 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         self._cpu_register_ptrs = [arena.data_ptr()]
         self._cpu_register_lengths = [arena_size]
 
-        for layer_name, cache, offset, raw_size in cache_layout:
-            cache_bytes = arena.narrow(0, offset, raw_size)
-            cpu_caches[layer_name].append(cache_bytes.view(cache.dtype).view(cache.shape))
+        for layer_name, cache, offset in cache_layout:
+            if preserve_aliases:
+                storage_offset = (alignment_offset + offset) // cache.element_size()
+                view = arena.view(cache.dtype).as_strided(cache.shape, cache.stride(), storage_offset)
+            else:
+                raw_size = cache.numel() * cache.element_size()
+                view = arena.narrow(0, offset, raw_size).view(cache.dtype).view(cache.shape)
+            cpu_caches[layer_name].append(view)
         return cpu_caches
 
     def _get_register_regions(self, kv_caches: dict[str, torch.Tensor]) -> RegisterRegions:
