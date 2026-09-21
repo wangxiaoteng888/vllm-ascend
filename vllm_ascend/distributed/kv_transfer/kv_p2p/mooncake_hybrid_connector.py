@@ -53,6 +53,7 @@ from vllm.v1.kv_cache_interface import (
 from vllm.v1.request import RequestStatus
 
 from vllm_ascend.ascend_config import get_ascend_config, init_ascend_config
+from vllm_ascend.core.kv_cache_interface import is_circular_kv_cache_spec
 from vllm_ascend.distributed.kv_transfer.utils.mooncake_transfer_engine import global_te
 from vllm_ascend.distributed.kv_transfer.utils.utils import PD_QOS_DEFAULT, get_transfer_timeout_value, inject_qos
 from vllm_ascend.utils import enable_custom_op, get_kv_cache_tensor_layers, is_vl_model
@@ -1120,6 +1121,10 @@ class MooncakeConnectorMetadata(KVConnectorMetadata):
 
 
 class MooncakeConnector(KVConnectorBase_V1, SupportsHMA):
+    @property
+    def supports_divergent_local_hybrid_hits(self) -> bool:
+        return True
+
     def __init__(  # type: ignore[misc]
         self, vllm_config: VllmConfig, role: KVConnectorRole, kv_cache_config: KVCacheConfig | None = None
     ):
@@ -1361,7 +1366,11 @@ class MooncakeConnectorScheduler:
 
     def _compute_transfer_block_ids(self, block_ids: BlockIds, prompt_len: int) -> BlockIds:
         transfer_block_ids = []
+        kv_cache_specs = getattr(self, "kv_cache_specs", ())
         for i, blocks in enumerate(block_ids):
+            if i < len(kv_cache_specs) and all(is_circular_kv_cache_spec(spec) for spec in kv_cache_specs[i]):
+                transfer_block_ids.append(blocks)
+                continue
             group_token_len = prompt_len
             group_block_len = math.ceil(group_token_len / self.group_block_size[i])
             if group_block_len > 0:
