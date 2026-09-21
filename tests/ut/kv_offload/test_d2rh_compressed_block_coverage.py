@@ -62,7 +62,7 @@ def test_host_hash_changes_at_the_logical_page_boundary(compress_ratio):
 
 def test_context_parallelism_counts_logical_tokens_once():
     scheduler = make_scheduler(4)
-    scheduler.pcp_size = 2
+    scheduler.dcp_size = 2
     assert scheduler._get_transfer_block_ids((list(range(1, 10)),), 1024) == ([1, 2, 3, 4],)
 
 
