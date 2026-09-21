@@ -45,7 +45,7 @@ def make_transfer(*, ratio=1, hbm_blocks=1, pp_size=1, sliding=False, existing_h
     worker.remote_te_port = {"p": {10 + rank: 1010 + rank for rank in range(pp_size)}}
     worker.block_size = 32
     worker.group_compress_ratios = {0: ratio}
-    written = set()
+    written: set[int] = set()
     calls = []
 
     def transfer(session, local_addrs, remote_addrs, lengths):
