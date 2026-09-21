@@ -15,7 +15,7 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p import mooncake_d2rh_connector a
 @pytest.mark.parametrize("packed_alias", [False, True])
 def test_h2d_preserves_each_component_once(indices, names, legacy, packed_alias):
     original_indices = list(indices)
-    spec = {"kv_cache_spec_type": "AttentionSpec"}
+    spec: dict[str, object] = {"kv_cache_spec_type": "AttentionSpec"}
     if not legacy:
         spec.update(layer_names=names, layer_cache_indices={name: [i] for i, name in enumerate(names)})
     slots = len(names)

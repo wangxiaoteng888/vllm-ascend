@@ -893,10 +893,10 @@ class D2RHThread(threading.Thread):
                         remote_request_id = (
                             params.get("remote_request_id", request_id) if params is not None else request_id
                         )
-                        block_map = self.remote_local_block_map.pop(remote_request_id, None)
+                        failed_block_map = self.remote_local_block_map.pop(remote_request_id, None)
                         self.remote_local_block_map.pop(request_id, None)
-                        if block_map:
-                            self.cpu_kvcache_manager.free_block_map(block_map)
+                        if failed_block_map:
+                            self.cpu_kvcache_manager.free_block_map(failed_block_map)
                         logger.exception("Failed to handle D2RH START_PULL for request %s: %s", request_id, e)
                         pull_ack = STAGING_FULL
                 else:
@@ -938,10 +938,10 @@ class D2RHThread(threading.Thread):
             self.send_pull_done(request_id)
         except Exception:
             # Ensure staged CPU blocks are reclaimed if hop1 transfer fails.
-            block_map = self.remote_local_block_map.pop(remote_request_id, None)
+            failed_block_map = self.remote_local_block_map.pop(remote_request_id, None)
             self.remote_local_block_map.pop(request_id, None)
-            if block_map:
-                self.cpu_kvcache_manager.free_block_map(block_map)
+            if failed_block_map:
+                self.cpu_kvcache_manager.free_block_map(failed_block_map)
             raise
 
     def _get_hop1_layer_pairs(
@@ -1923,7 +1923,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 total_blocks = math.ceil(prompt_len / tokens_per_block)
 
             digest = hashlib.sha256(b"d2rh-decode-host-cache-v1" + struct.pack(">I", group_id)).digest()
-            prefix_hashes: list[str] = []
+            prefix_hashes: list[str | None] = []
             for block_idx in range(total_blocks):
                 start = block_idx * tokens_per_block
                 end = min((block_idx + 1) * tokens_per_block, prompt_len)
@@ -2443,10 +2443,10 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             logger.info("D2RH host content cache capacity_blocks=%d", self.num_blocks)
             cpu_caches = self._make_cpu_staging_caches(kv_caches)
             metadata_layers = len(self.kv_caches_base_addr)
-            self.cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_len_per_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_stride_per_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_size_scale = [[] for _ in range(metadata_layers)]
+            self.cpu_kv_caches_base_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_len_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_stride_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_size_scale: list[list[int]] = [[] for _ in range(metadata_layers)]
             for name, caches in cpu_caches.items():
                 layer_idx = layer_name_to_idx[name]
                 for cache in caches:
@@ -2467,16 +2467,13 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         return register_regions
 
     def _create_recv_thread(self, ready_event: threading.Event) -> KVCacheRecvingThread:
-        cpu_metadata = dict(
+        self.d2rh_thread = D2RHThread(
             cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
             cpu_block_len_per_addr=self.cpu_block_len_per_addr,
             cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
             cpu_block_size_scale=self.cpu_block_size_scale,
             cpu_kvcache_manager=self.cpu_kvcache_manager,
             remote_local_block_map=self.remote_local_block_map,
-        )
-        self.d2rh_thread = D2RHThread(
-            **cpu_metadata,
             kv_group2layeridx=self.kv_group2layeridx,
             engine=self.engine,
             vllm_config=self.vllm_config,
@@ -2503,7 +2500,12 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             self._prefill_pp_layer_partition,
             self.kv_group2layeridx,
             self.block_size_scale,
-            **cpu_metadata,
+            cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
+            cpu_block_len_per_addr=self.cpu_block_len_per_addr,
+            cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
+            cpu_block_size_scale=self.cpu_block_size_scale,
+            cpu_kvcache_manager=self.cpu_kvcache_manager,
+            remote_local_block_map=self.remote_local_block_map,
             cpu_te_rpc_port=self.te_rpc_port,
         )
 

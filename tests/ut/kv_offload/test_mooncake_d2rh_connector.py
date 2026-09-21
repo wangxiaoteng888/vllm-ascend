@@ -23,7 +23,7 @@ if "mooncake.engine" not in sys.modules:
         from mooncake.engine import TransferEngine  # noqa: F401
     except ImportError:
         _fake_engine = types.ModuleType("mooncake.engine")
-        _fake_engine.TransferEngine = MagicMock()
+        _fake_engine.__dict__["TransferEngine"] = MagicMock()
         sys.modules["mooncake.engine"] = _fake_engine
 
 from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec  # noqa: E402

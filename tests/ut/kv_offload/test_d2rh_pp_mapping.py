@@ -17,7 +17,7 @@ class PlannerTests(unittest.TestCase):
             )
         )
         self.worker._get_hop1_layer_pairs = lambda *args: d2rh.D2RHThread._get_hop1_layer_pairs(self.worker, *args)
-        self.spec = {"layer_names": ["layer.0", "layer.1"], "kv_cache_spec_type": "AttentionSpec"}
+        self.spec: dict[str, object] = {"layer_names": ["layer.0", "layer.1"], "kv_cache_spec_type": "AttentionSpec"}
 
     def test_pp_stage_filter_and_renumber(self):
         self.assertEqual(self.worker._get_hop1_layer_pairs(self.spec, [0, 1], {"layer.1": 7}), [(1, 7)])
@@ -79,9 +79,14 @@ class PlannerTests(unittest.TestCase):
         w.remote_te_port = {"e": {10: 1010, 11: 1011}}
         w.block_size = 32
         w.group_compress_ratios = {0: 1}
-        self.calls = []
-        self.releases = []
-        w.engine = SimpleNamespace(batch_transfer_sync_read=lambda *args: self.calls.append(args) or 0)
+        self.calls: list[tuple[str, list[int], list[int], list[int]]] = []
+        self.releases: list[tuple[object, ...]] = []
+
+        def transfer(session: str, local_addrs: list[int], remote_addrs: list[int], lengths: list[int]) -> int:
+            self.calls.append((session, local_addrs, remote_addrs, lengths))
+            return 0
+
+        w.engine = SimpleNamespace(batch_transfer_sync_read=transfer)
         w._send_done_recv_signal = lambda *args: self.releases.append(args)
         transport_patch = patch.multiple(
             d2rh,
