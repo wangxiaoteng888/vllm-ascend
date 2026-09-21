@@ -9,6 +9,7 @@ host caching, offset-qualified block maps, and scheduler helpers.
 import sys
 import threading
 import types
+from importlib import import_module
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -20,7 +21,7 @@ import torch
 # depending on their collection order made this module fail when run alone.
 if "mooncake.engine" not in sys.modules:
     try:
-        from mooncake.engine import TransferEngine  # noqa: F401
+        import_module("mooncake.engine")
     except ImportError:
         _fake_engine = types.ModuleType("mooncake.engine")
         _fake_engine.__dict__["TransferEngine"] = MagicMock()
