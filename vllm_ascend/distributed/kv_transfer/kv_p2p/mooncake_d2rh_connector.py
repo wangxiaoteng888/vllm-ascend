@@ -987,6 +987,7 @@ class D2RHThread(threading.Thread):
         remote_port_send_num = req_meta.get("remote_port_send_num")
         block_map = self.remote_local_block_map[remote_request_id]
         cache_hits: set[StagingBlockKey] = req_meta.get("cache_hits", set())
+        cacheable_misses = req_meta.get("cacheable_misses", {})
         if self.log_full_block_map:
             logger.info("[D2RH Thread] block_map: %s", block_map)
         else:
@@ -1100,6 +1101,13 @@ class D2RHThread(threading.Thread):
                     # already compacted miss list.
                     remote_block_token_size = self.block_size * self.group_compress_ratios[group_id]
                     remote_start_block = req_meta.get("num_computed_tokens", 0) // remote_block_token_size
+                    # HBM-resident prefixes are not copied into new Host blocks.
+                    # Do not publish those unwritten misses as valid cache entries.
+                    # Existing Host hits remain valid; skipped allocations stay
+                    # pinned until the normal H2D completion cleanup releases them.
+                    if remote_start_block:
+                        for block_id in remote_group_block_ids[:remote_start_block]:
+                            cacheable_misses.pop((group_id, block_id, remote_tp_offset), None)
                     remote_group_block_ids = remote_group_block_ids[remote_start_block:]
                     local_group_block_ids = local_group_block_ids[remote_start_block:]
                 if cache_hits:
