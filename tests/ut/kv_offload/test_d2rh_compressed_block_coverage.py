@@ -20,7 +20,7 @@ def make_scheduler(compress_ratio):
         num_kv_heads=1,
         head_size=640,
         dtype=torch.float8_e4m3fn,
-        compress_ratio=compress_ratio,
+        tokens_per_state=compress_ratio,
         model_version="deepseek_v4",
     )
     scheduler = object.__new__(MooncakeConnectorScheduler)
