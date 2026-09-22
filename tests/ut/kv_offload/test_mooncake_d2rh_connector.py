@@ -89,6 +89,48 @@ class TestBuildStartPullParams:
         assert params["group_pulls_by_port"][1][0].is_group_transfer_end is True
 
 
+class TestSchedulerSocketReuse:
+    @staticmethod
+    def _scheduler():
+        scheduler = object.__new__(d2rh.MooncakeConnectorScheduler)
+        scheduler.local_host = "d-host"
+        scheduler.timeout = 1.0
+        scheduler.encoder = MagicMock()
+        scheduler.encoder.encode.return_value = b"request"
+        scheduler.remote_poller = MagicMock()
+        scheduler._get_remote_socket = MagicMock(return_value=MagicMock())
+        scheduler._return_remote_socket = MagicMock()
+        scheduler._discard_remote_socket = MagicMock()
+        return scheduler
+
+    def test_matching_reply_returns_socket_to_pool(self):
+        scheduler = self._scheduler()
+
+        with (
+            patch.object(d2rh, "ensure_zmq_send"),
+            patch.object(d2rh, "ensure_zmq_recv", return_value=b"ACK"),
+        ):
+            assert scheduler._send_start_pull("req", {}, 38100) == b"ACK"
+
+        socket = scheduler._get_remote_socket.return_value
+        scheduler._return_remote_socket.assert_called_once_with(socket, "d-host", 38100)
+        scheduler._discard_remote_socket.assert_not_called()
+
+    def test_failed_reply_discards_req_socket(self):
+        scheduler = self._scheduler()
+
+        with (
+            patch.object(d2rh, "ensure_zmq_send"),
+            patch.object(d2rh, "ensure_zmq_recv", side_effect=RuntimeError("timeout")),
+            pytest.raises(RuntimeError, match="timeout"),
+        ):
+            scheduler._send_start_pull("req", {}, 38100)
+
+        socket = scheduler._get_remote_socket.return_value
+        scheduler._discard_remote_socket.assert_called_once_with(socket)
+        scheduler._return_remote_socket.assert_not_called()
+
+
 class TestBlockMapHelpers:
     def test_roundtrip_keeps_manager_api_as_block_ids(self):
         block_map = d2rh._build_block_map(([10, 11], [20]), ([0, 1], [0]))
@@ -236,6 +278,10 @@ class TestHostContentCache:
         manager.free_block_map(first_map)
         manager.free_block_map(second_map)
         assert manager.cache_stats() == (2, 0, 0)
+        assert list(manager.evictable_blocks) == [
+            first_map[(0, 10, 0)],
+            second_map[(0, 11, 0)],
+        ]
 
         # Two new hashes must evict the two unpinned cached blocks (LRU order).
         result = manager.alloc_sharded_block_map(([20, 21],), self._pulls(), ([b"\x03", b"\x04"],))
@@ -261,6 +307,7 @@ class TestHostContentCache:
         hit_block_map, cache_hits, _ = result
         assert cache_hits == {(0, 10, 0)}
         assert manager.pin_count[hit_block_map[(0, 10, 0)]] == 1
+        assert list(manager.evictable_blocks) == [second_map[(0, 11, 0)]]
 
         # Two new hashes cannot be served: only one evictable block remains.
         result = manager.alloc_sharded_block_map(([20, 21],), self._pulls(), ([b"\x03", b"\x04"],))

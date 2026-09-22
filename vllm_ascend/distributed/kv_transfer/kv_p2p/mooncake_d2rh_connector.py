@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import contextlib
 import copy
 import hashlib
 import logging
@@ -510,15 +511,30 @@ class D2RHCPUCacheManager:
         # blocks.
         self.cache_by_key: OrderedDict[HostCacheKey, int] = OrderedDict()
         self.cache_key_by_block: dict[int, HostCacheKey] = {}
+        # Cached blocks with no active users, ordered from least to most
+        # recently released. This avoids rescanning the full host cache for
+        # every staging allocation when the cache is saturated.
+        self.evictable_blocks: OrderedDict[int, None] = OrderedDict()
         self.pending_by_key: dict[HostCacheKey, int] = {}
         self.pending_key_by_block: dict[int, HostCacheKey] = {}
         self.pin_count: dict[int, int] = defaultdict(int)
         self.lock = threading.Lock()
 
+    def _remove_evictable_locked(self, block_id: int) -> None:
+        self.evictable_blocks.pop(block_id, None)
+
+    def _add_evictable_locked(self, block_id: int) -> None:
+        if block_id in self.cache_key_by_block and self.pin_count.get(block_id, 0) == 0:
+            self.evictable_blocks[block_id] = None
+
     def _take_block_locked(self) -> int | None:
         if self.free_queue:
             return self.free_queue.popleft()
-        for cache_key, block_id in list(self.cache_by_key.items()):
+        while self.evictable_blocks:
+            block_id, _ = self.evictable_blocks.popitem(last=False)
+            cache_key = self.cache_key_by_block.get(block_id)
+            if cache_key is None or self.cache_by_key.get(cache_key) != block_id:
+                continue
             if self.pin_count.get(block_id, 0) != 0:
                 continue
             self.cache_by_key.pop(cache_key, None)
@@ -539,6 +555,7 @@ class D2RHCPUCacheManager:
                 self.pending_by_key.pop(pending_key, None)
             if block_id in self.cache_key_by_block:
                 # Valid cached blocks stay resident but become evictable.
+                self._add_evictable_locked(block_id)
                 continue
             if block_id in self.used_set:
                 self.used_set.remove(block_id)
@@ -623,6 +640,7 @@ class D2RHCPUCacheManager:
                     if local_block_id is not None:
                         self.cache_by_key.move_to_end(cache_key)
                         if local_block_id not in acquired_blocks:
+                            self._remove_evictable_locked(local_block_id)
                             self.pin_count[local_block_id] += 1
                         block_map[key] = local_block_id
                         cache_hits.add(key)
@@ -673,12 +691,15 @@ class D2RHCPUCacheManager:
                 self.pending_key_by_block.pop(block_id, None)
                 old_block_id = self.cache_by_key.pop(cache_key, None)
                 if old_block_id is not None and old_block_id != block_id:
+                    self._remove_evictable_locked(old_block_id)
                     self.cache_key_by_block.pop(old_block_id, None)
                     if self.pin_count.get(old_block_id, 0) == 0:
                         self.used_set.discard(old_block_id)
                         self.free_queue.append(old_block_id)
+                self._remove_evictable_locked(block_id)
                 self.cache_by_key[cache_key] = block_id
                 self.cache_key_by_block[block_id] = cache_key
+                self._add_evictable_locked(block_id)
 
     def cache_stats(self) -> tuple[int, int, int]:
         with self.lock:
@@ -893,10 +914,10 @@ class D2RHThread(threading.Thread):
                         remote_request_id = (
                             params.get("remote_request_id", request_id) if params is not None else request_id
                         )
-                        failed_block_map = self.remote_local_block_map.pop(remote_request_id, None)
+                        block_map = self.remote_local_block_map.pop(remote_request_id, None)
                         self.remote_local_block_map.pop(request_id, None)
-                        if failed_block_map:
-                            self.cpu_kvcache_manager.free_block_map(failed_block_map)
+                        if block_map:
+                            self.cpu_kvcache_manager.free_block_map(block_map)
                         logger.exception("Failed to handle D2RH START_PULL for request %s: %s", request_id, e)
                         pull_ack = STAGING_FULL
                 else:
@@ -938,10 +959,10 @@ class D2RHThread(threading.Thread):
             self.send_pull_done(request_id)
         except Exception:
             # Ensure staged CPU blocks are reclaimed if hop1 transfer fails.
-            failed_block_map = self.remote_local_block_map.pop(remote_request_id, None)
+            block_map = self.remote_local_block_map.pop(remote_request_id, None)
             self.remote_local_block_map.pop(request_id, None)
-            if failed_block_map:
-                self.cpu_kvcache_manager.free_block_map(failed_block_map)
+            if block_map:
+                self.cpu_kvcache_manager.free_block_map(block_map)
             raise
 
     def _get_hop1_layer_pairs(
@@ -1923,7 +1944,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 total_blocks = math.ceil(prompt_len / tokens_per_block)
 
             digest = hashlib.sha256(b"d2rh-decode-host-cache-v1" + struct.pack(">I", group_id)).digest()
-            prefix_hashes: list[str | None] = []
+            prefix_hashes: list[str] = []
             for block_idx in range(total_blocks):
                 start = block_idx * tokens_per_block
                 end = min((block_idx + 1) * tokens_per_block, prompt_len)
@@ -2083,14 +2104,20 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
 
     def _send_start_pull(self, request_id: str, params: dict[str, Any], d2rh_port: int) -> bytes:
         sock: zmq.Socket | None = None  # type: ignore[name-defined]
+        reusable = False
         try:
             sock = self._get_remote_socket(self.local_host, d2rh_port)
             d2rh_path = f"{self.local_host}:{d2rh_port}"
             ensure_zmq_send(sock, self.encoder.encode((START_PULL, request_id, params)), d2rh_path)
-            return ensure_zmq_recv(sock, self.remote_poller, d2rh_path, timeout=self.timeout)
+            response = ensure_zmq_recv(sock, self.remote_poller, d2rh_path, timeout=self.timeout)
+            reusable = True
+            return response
         finally:
             if sock is not None:
-                self._return_remote_socket(sock, self.local_host, d2rh_port)
+                if reusable:
+                    self._return_remote_socket(sock, self.local_host, d2rh_port)
+                else:
+                    self._discard_remote_socket(sock)
 
     def _get_remote_socket(self, remote_host: str, remote_handshake_port: int) -> zmq.Socket:  # type: ignore[name-defined]
         remote_path = make_zmq_path("tcp", remote_host, remote_handshake_port)
@@ -2112,6 +2139,12 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
         remote_path = make_zmq_path("tcp", remote_host, remote_handshake_port)
         with self.remote_sockets_lock:
             self.remote_sockets[remote_path].append(sock)
+
+    def _discard_remote_socket(self, sock: zmq.Socket) -> None:  # type: ignore[name-defined]
+        """Drop a REQ socket that did not receive its matching REP."""
+        with contextlib.suppress(KeyError, zmq.ZMQError):  # type: ignore[name-defined]
+            self.remote_poller.unregister(sock)
+        sock.close(linger=0)
 
     def get_num_new_matched_tokens(self, request: "Request", num_computed_tokens: int) -> tuple[int, bool]:
         params = request.kv_transfer_params
@@ -2443,10 +2476,10 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             logger.info("D2RH host content cache capacity_blocks=%d", self.num_blocks)
             cpu_caches = self._make_cpu_staging_caches(kv_caches)
             metadata_layers = len(self.kv_caches_base_addr)
-            self.cpu_kv_caches_base_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-            self.cpu_block_len_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-            self.cpu_block_stride_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
-            self.cpu_block_size_scale: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_len_per_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_stride_per_addr = [[] for _ in range(metadata_layers)]
+            self.cpu_block_size_scale = [[] for _ in range(metadata_layers)]
             for name, caches in cpu_caches.items():
                 layer_idx = layer_name_to_idx[name]
                 for cache in caches:
@@ -2467,13 +2500,16 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         return register_regions
 
     def _create_recv_thread(self, ready_event: threading.Event) -> KVCacheRecvingThread:
-        self.d2rh_thread = D2RHThread(
+        cpu_metadata = dict(
             cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
             cpu_block_len_per_addr=self.cpu_block_len_per_addr,
             cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
             cpu_block_size_scale=self.cpu_block_size_scale,
             cpu_kvcache_manager=self.cpu_kvcache_manager,
             remote_local_block_map=self.remote_local_block_map,
+        )
+        self.d2rh_thread = D2RHThread(
+            **cpu_metadata,
             kv_group2layeridx=self.kv_group2layeridx,
             engine=self.engine,
             vllm_config=self.vllm_config,
@@ -2500,12 +2536,7 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             self._prefill_pp_layer_partition,
             self.kv_group2layeridx,
             self.block_size_scale,
-            cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
-            cpu_block_len_per_addr=self.cpu_block_len_per_addr,
-            cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
-            cpu_block_size_scale=self.cpu_block_size_scale,
-            cpu_kvcache_manager=self.cpu_kvcache_manager,
-            remote_local_block_map=self.remote_local_block_map,
+            **cpu_metadata,
             cpu_te_rpc_port=self.te_rpc_port,
         )
 
