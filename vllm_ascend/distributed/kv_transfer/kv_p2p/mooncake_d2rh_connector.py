@@ -890,7 +890,9 @@ class D2RHThread(threading.Thread):
                             pull_ack = STAGING_FULL
                         else:
                             block_map, cache_hits, cacheable_misses = allocation
-                            remote_request_id = params.get("remote_request_id", request_id)
+                            remote_request_id = params.get("remote_request_id")
+                            if not isinstance(remote_request_id, str):
+                                remote_request_id = request_id
                             self.remote_local_block_map[request_id] = block_map
                             self.remote_local_block_map[remote_request_id] = block_map
                             self.add_request(
@@ -911,10 +913,12 @@ class D2RHThread(threading.Thread):
                     except Exception as e:
                         # Release any partially created mapping to prevent CPU
                         # staging leaks on handshake/queueing failures.
-                        remote_request_id = (
-                            params.get("remote_request_id", request_id) if params is not None else request_id
-                        )
-                        block_map = self.remote_local_block_map.pop(remote_request_id, None)
+                        remote_request_id = request_id
+                        if params is not None:
+                            candidate_request_id = params.get("remote_request_id")
+                            if isinstance(candidate_request_id, str):
+                                remote_request_id = candidate_request_id
+                        block_map = self.remote_local_block_map.pop(remote_request_id, {})
                         self.remote_local_block_map.pop(request_id, None)
                         if block_map:
                             self.cpu_kvcache_manager.free_block_map(block_map)
@@ -959,7 +963,7 @@ class D2RHThread(threading.Thread):
             self.send_pull_done(request_id)
         except Exception:
             # Ensure staged CPU blocks are reclaimed if hop1 transfer fails.
-            block_map = self.remote_local_block_map.pop(remote_request_id, None)
+            block_map = self.remote_local_block_map.pop(remote_request_id, {})
             self.remote_local_block_map.pop(request_id, None)
             if block_map:
                 self.cpu_kvcache_manager.free_block_map(block_map)
@@ -1944,7 +1948,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 total_blocks = math.ceil(prompt_len / tokens_per_block)
 
             digest = hashlib.sha256(b"d2rh-decode-host-cache-v1" + struct.pack(">I", group_id)).digest()
-            prefix_hashes: list[str] = []
+            prefix_hashes: list[str | None] = []
             for block_idx in range(total_blocks):
                 start = block_idx * tokens_per_block
                 end = min((block_idx + 1) * tokens_per_block, prompt_len)
@@ -1952,6 +1956,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
                 prefix_hashes.append(digest.hex())
 
             num_remote_blocks = len(remote_group_ids)
+            group_hashes: list[str | None]
             if group_info.is_state_group:
                 final_hash = prefix_hashes[-1] if prefix_hashes else None
                 group_hashes = [
@@ -2142,7 +2147,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
 
     def _discard_remote_socket(self, sock: zmq.Socket) -> None:  # type: ignore[name-defined]
         """Drop a REQ socket that did not receive its matching REP."""
-        with contextlib.suppress(KeyError, zmq.ZMQError):  # type: ignore[name-defined]
+        with contextlib.suppress(KeyError, zmq.ZMQError):  # type: ignore[attr-defined]
             self.remote_poller.unregister(sock)
         sock.close(linger=0)
 
@@ -2215,6 +2220,7 @@ class MooncakeConnectorScheduler(BaseMooncakeConnectorScheduler):
 class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
     def __init__(self, vllm_config: VllmConfig, engine_id: str, kv_cache_config: KVCacheConfig):
         super().__init__(vllm_config, engine_id, kv_cache_config)
+        self._is_hma_required: bool = bool(getattr(self, "_is_hma_required", False))
         self.remote_local_block_map: dict[str, dict[tuple[int, ...], int]] = {}
         self.d2rh_thread: D2RHThread | None = None
 
@@ -2476,10 +2482,10 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             logger.info("D2RH host content cache capacity_blocks=%d", self.num_blocks)
             cpu_caches = self._make_cpu_staging_caches(kv_caches)
             metadata_layers = len(self.kv_caches_base_addr)
-            self.cpu_kv_caches_base_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_len_per_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_stride_per_addr = [[] for _ in range(metadata_layers)]
-            self.cpu_block_size_scale = [[] for _ in range(metadata_layers)]
+            self.cpu_kv_caches_base_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_len_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_stride_per_addr: list[list[int]] = [[] for _ in range(metadata_layers)]
+            self.cpu_block_size_scale: list[list[int]] = [[] for _ in range(metadata_layers)]
             for name, caches in cpu_caches.items():
                 layer_idx = layer_name_to_idx[name]
                 for cache in caches:
@@ -2500,16 +2506,13 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
         return register_regions
 
     def _create_recv_thread(self, ready_event: threading.Event) -> KVCacheRecvingThread:
-        cpu_metadata = dict(
+        self.d2rh_thread = D2RHThread(
             cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
             cpu_block_len_per_addr=self.cpu_block_len_per_addr,
             cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
             cpu_block_size_scale=self.cpu_block_size_scale,
             cpu_kvcache_manager=self.cpu_kvcache_manager,
             remote_local_block_map=self.remote_local_block_map,
-        )
-        self.d2rh_thread = D2RHThread(
-            **cpu_metadata,
             kv_group2layeridx=self.kv_group2layeridx,
             engine=self.engine,
             vllm_config=self.vllm_config,
@@ -2536,7 +2539,12 @@ class MooncakeConnectorWorker(BaseMooncakeConnectorWorker):
             self._prefill_pp_layer_partition,
             self.kv_group2layeridx,
             self.block_size_scale,
-            **cpu_metadata,
+            cpu_kv_caches_base_addr=self.cpu_kv_caches_base_addr,
+            cpu_block_len_per_addr=self.cpu_block_len_per_addr,
+            cpu_block_stride_per_addr=self.cpu_block_stride_per_addr,
+            cpu_block_size_scale=self.cpu_block_size_scale,
+            cpu_kvcache_manager=self.cpu_kvcache_manager,
+            remote_local_block_map=self.remote_local_block_map,
             cpu_te_rpc_port=self.te_rpc_port,
         )
 
@@ -2554,6 +2562,8 @@ class MooncakeConnector(BaseMooncakeConnector):
         self._kv_transfer_config = vllm_config.kv_transfer_config
         self.engine_id = self._kv_transfer_config.engine_id
         self._connector_metadata = MooncakeConnectorMetadata()
+        self.connector_scheduler: MooncakeConnectorScheduler | None
+        self.connector_worker: MooncakeConnectorWorker | None
 
         if role == KVConnectorRole.SCHEDULER:
             assert kv_cache_config is not None
