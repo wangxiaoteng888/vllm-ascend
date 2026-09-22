@@ -336,6 +336,8 @@ def get_d2rh_zmq_port(
     pp_rank: int = 0,
     pcp_rank: int = 0,
 ) -> int:
+    kv_transfer_config = vllm_config.kv_transfer_config
+    assert kv_transfer_config is not None
     parallel_config = vllm_config.parallel_config
     tp_size = parallel_config.tensor_parallel_size
     pp_size = parallel_config.pipeline_parallel_size
@@ -343,17 +345,23 @@ def get_d2rh_zmq_port(
     dp_rank = parallel_config.data_parallel_rank
     device_index = get_parallel_device_index(tp_rank, tp_size, pp_rank, pcp_rank)
     dp_offset = get_dp_port_offset(dp_rank, tp_size, pp_size, pcp_size)
-    return D2RH_ZMQ_PORT_BASE + dp_offset + device_index
+    base_port = int(kv_transfer_config.get_from_extra_config("d2rh_zmq_port", D2RH_ZMQ_PORT_BASE))
+    return base_port + dp_offset + device_index
 
 
 def get_scheduler_ready_zmq_port(vllm_config: VllmConfig) -> int:
+    kv_transfer_config = vllm_config.kv_transfer_config
+    assert kv_transfer_config is not None
     parallel_config = vllm_config.parallel_config
     tp_size = parallel_config.tensor_parallel_size
     pp_size = parallel_config.pipeline_parallel_size
     pcp_size = parallel_config.prefill_context_parallel_size
     dp_rank = parallel_config.data_parallel_rank
     dp_offset = get_dp_port_offset(dp_rank, tp_size, pp_size, pcp_size)
-    return SCHEDULER_READY_ZMQ_PORT_BASE + dp_offset
+    base_port = int(
+        kv_transfer_config.get_from_extra_config("d2rh_scheduler_ready_port", SCHEDULER_READY_ZMQ_PORT_BASE)
+    )
+    return base_port + dp_offset
 
 
 def compute_tp_num_need_pulls(

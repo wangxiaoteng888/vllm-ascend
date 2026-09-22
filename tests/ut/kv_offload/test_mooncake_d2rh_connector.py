@@ -31,6 +31,40 @@ from vllm_ascend.core.kv_cache_interface import AscendSlidingWindowMLASpec  # no
 from vllm_ascend.distributed.kv_transfer.kv_p2p import mooncake_d2rh_connector as d2rh  # noqa: E402
 
 
+class TestD2RHPorts:
+    @staticmethod
+    def _config(extra_config: dict[str, int] | None = None):
+        extra_config = extra_config or {}
+        return SimpleNamespace(
+            kv_transfer_config=SimpleNamespace(
+                get_from_extra_config=lambda name, default: extra_config.get(name, default)
+            ),
+            parallel_config=SimpleNamespace(
+                tensor_parallel_size=2,
+                pipeline_parallel_size=2,
+                prefill_context_parallel_size=1,
+                data_parallel_rank=1,
+            ),
+        )
+
+    def test_uses_default_port_bases(self):
+        config = self._config()
+
+        assert d2rh.get_d2rh_zmq_port(config, tp_rank=1, pp_rank=1) == 38107
+        assert d2rh.get_scheduler_ready_zmq_port(config) == 38204
+
+    def test_uses_configured_port_bases(self):
+        config = self._config(
+            {
+                "d2rh_zmq_port": 39100,
+                "d2rh_scheduler_ready_port": 39200,
+            }
+        )
+
+        assert d2rh.get_d2rh_zmq_port(config, tp_rank=1, pp_rank=1) == 39107
+        assert d2rh.get_scheduler_ready_zmq_port(config) == 39204
+
+
 class TestMooncakeAgentMetadata:
     def test_metadata_carries_handshake_port(self):
         metadata = d2rh.MooncakeAgentMetadata(
