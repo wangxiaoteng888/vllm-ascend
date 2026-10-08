@@ -110,8 +110,10 @@ and restores the complete snapshot and replays one prompt token.
 
 P's layerwise KV restoration executes eagerly in the V1 runner. The example keeps
 P eager and configures D with compilation mode 3 and `FULL` graphs. D reads P's
-whole-block objects using their existing layer offsets, including the physical
-tail page. It restores all layers in bulk outside model forward, then schedules
+whole-block objects using their existing layer offsets, including a physical
+tail page containing cached tokens. A one-token tail is replayed entirely on D
+and does not need a destination page during asynchronous loading. D restores all
+layers in bulk outside model forward, then schedules
 the one-token replay. No attention-layer load hooks run on D, and subsequent
 decode steps perform no pool reads. Setting D's `use_layerwise: true` retains
 the earlier layerwise load path, which requires `PIECEWISE` graphs.

@@ -1532,8 +1532,12 @@ class KVPoolWorker:
         if transfer is None or len(request.block_ids_by_group) != 1:
             raise ValueError("Bulk pool PD requires a snapshot and one KV cache group")
         object_ids = list(transfer["block_hashes"])
-        if transfer["tail_tokens"]:
+        # Async allocation covers N-1 cached tokens. A one-token tail is
+        # entirely replayed on D and has no destination page until forward.
+        if transfer["tail_tokens"] > 1:
             object_ids.append(transfer["tail_id"])
+        if not object_ids:
+            return
         block_ids = request.block_ids_by_group[0]
         if len(block_ids) < len(object_ids):
             raise ValueError("Bulk pool PD has insufficient destination blocks")

@@ -46,11 +46,16 @@ def test_bulk_restore_uses_p_keys_and_all_layer_ranges(worker, length):
     request = make_pd_request(length, decode=True)
     worker._load_pd_snapshot(request)
     expected = [worker._make_layerwise_full_key(0, value) for value in request.pd_transfer["block_hashes"]]
-    if length % 16:
+    if length % 16 > 1:
         expected.append(worker._make_layerwise_full_key(0, request.pd_transfer["tail_id"]))
+    if not expected:
+        worker.m_store.batch_get_start.assert_not_called()
+        worker.m_store.batch_add_lease.assert_not_called()
+        worker.m_store.store.batch_copy.assert_not_called()
+        return
     addresses = [
         [1000 + block * 32, 2000 + block * 64, 3000 + block * 48, 4000 + block * 16]
-        for block in request.block_ids_by_group[0]
+        for block in request.block_ids_by_group[0][: len(expected)]
     ]
     if worker.backend_name == "mooncake":
         worker.m_store.batch_copy_get.assert_called_once_with(
@@ -66,6 +71,17 @@ def test_bulk_restore_uses_p_keys_and_all_layer_ranges(worker, length):
         )
         assert worker.m_store.batch_add_lease.call_args.args[0] == expected
         worker.m_store.batch_remove_lease.assert_called_once_with(expected)
+
+
+@pytest.mark.parametrize("length", [17, 33])
+def test_bulk_restore_does_not_require_a_page_for_the_replayed_tail_token(worker, length):
+    request = make_pd_request(length, decode=True)
+    request.block_ids_by_group = [request.block_ids_by_group[0][:-1]]
+    worker._load_pd_snapshot(request)
+    acquire = worker.m_store.batch_get_start if worker.backend_name == "mooncake" else worker.m_store.batch_add_lease
+    assert acquire.call_args.args[0] == [
+        worker._make_layerwise_full_key(0, value) for value in request.pd_transfer["block_hashes"]
+    ]
 
 
 @pytest.mark.parametrize("length", [1, 16, 17])
@@ -112,7 +128,8 @@ def test_only_requests_with_external_tokens_are_queued(worker, length):
     worker.start_load_kv(meta)
     if length == 1:
         worker.kv_recv_thread.add_request.assert_not_called()
-        assert worker.m_store.batch_get_start.called or worker.m_store.batch_add_lease.called
+        worker.m_store.batch_get_start.assert_not_called()
+        worker.m_store.batch_add_lease.assert_not_called()
     else:
         worker.kv_recv_thread.add_request.assert_called_once_with(request)
         worker.m_store.batch_get_start.assert_not_called()
@@ -159,7 +176,7 @@ def test_bulk_failure_releases_acquired_objects(worker, failure):
 def test_split_ranges_acquire_each_object_only_once(worker):
     worker.layerwise_max_transfer_blocks = 1
     worker.layerwise_max_transfer_bytes = 16
-    worker._load_pd_snapshot(make_pd_request(17, decode=True))
+    worker._load_pd_snapshot(make_pd_request(18, decode=True))
     acquire = worker.m_store.batch_get_start if worker.backend_name == "mooncake" else worker.m_store.batch_add_lease
     assert acquire.call_count == 2
     copy = worker.m_store.batch_copy_get if worker.backend_name == "mooncake" else worker.m_store.store.batch_copy
@@ -197,7 +214,7 @@ def test_bulk_receive_failure_is_propagated_to_engine(worker):
         worker.get_finished(set(), AscendConnectorMetadata(preempted_req_ids=set()))
 
 
-@pytest.mark.parametrize("length", [16, 17])
+@pytest.mark.parametrize("length", [16, 18])
 def test_layerwise_written_bytes_round_trip_to_different_bulk_destination_pages(worker, length):
     request = make_pd_request(length, decode=True)
     sizes = [32, 64, 48, 16]
