@@ -6,8 +6,14 @@ model=${3:?Missing model path}
 python_bin=${4:-python3}
 backend=${5:-mooncake}
 case "$role" in
-  prefill) kv_role=kv_producer; port=18080 ;;
-  decode) kv_role=kv_consumer; port=18081 ;;
+  prefill)
+    kv_role=kv_producer; port=18080; use_layerwise=true
+    graph_args=(--enforce-eager)
+    ;;
+  decode)
+    kv_role=kv_consumer; port=18081; use_layerwise=false
+    graph_args=(--compilation-config '{"mode":3,"cudagraph_mode":"FULL","cudagraph_capture_sizes":[1,2,4]}')
+    ;;
   *) echo "Unknown role: $role" >&2; exit 2 ;;
 esac
 export ASCEND_RT_VISIBLE_DEVICES="$device"
@@ -23,11 +29,11 @@ case "$backend" in
     ;;
   *) echo "Unknown backend: $backend" >&2; exit 2 ;;
 esac
-kv_config="{\"kv_connector\":\"AscendStoreConnector\",\"kv_role\":\"$kv_role\",\"kv_connector_extra_config\":{\"backend\":\"$backend\",\"use_layerwise\":true,\"pool_pd\":true,\"consumer_is_to_load\":true}}"
+kv_config="{\"kv_connector\":\"AscendStoreConnector\",\"kv_role\":\"$kv_role\",\"kv_connector_extra_config\":{\"backend\":\"$backend\",\"use_layerwise\":$use_layerwise,\"pool_pd\":true,\"consumer_is_to_load\":true}}"
 exec "$python_bin" -m vllm.entrypoints.openai.api_server \
   --model "$model" --served-model-name qwen3-30b \
   --host 127.0.0.1 --port "$port" --tensor-parallel-size 1 \
   --dtype bfloat16 --max-model-len 4096 --max-num-seqs 4 \
   --max-num-batched-tokens 128 --gpu-memory-utilization 0.85 \
-  --block-size 128 --enforce-eager --no-enable-prefix-caching \
+  --block-size 128 "${graph_args[@]}" --no-enable-prefix-caching \
   --kv-transfer-config "$kv_config"

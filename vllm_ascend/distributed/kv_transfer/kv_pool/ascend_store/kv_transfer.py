@@ -1219,6 +1219,10 @@ class KVCacheStoreRecvingThread(KVTransferThread):
         try:
             load_spec = req_meta.load_spec
             req_id = req_meta.req_id
+            if self.worker is not None and getattr(self.worker, "bulk_pd_load", False) is True:
+                self.worker._load_pd_snapshot(req_meta)
+                self.set_finished_request(req_id)
+                return
             if load_spec is None:
                 logger.error("KV pool async recv request %s has no load spec; skip load.", req_id)
                 self.set_finished_request(req_id)

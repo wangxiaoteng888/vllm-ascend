@@ -203,7 +203,9 @@ class KVPoolWorker:
         self._extra_config = extra_config
         self.use_layerwise = use_layerwise
         self.kv_role = vllm_config.kv_transfer_config.kv_role
-        self.load_async = extra_config.get("load_async", False)
+        self.pool_pd = extra_config.get("pool_pd", False) is True
+        self.bulk_pd_load = self.pool_pd and self.kv_role == "kv_consumer" and not self.use_layerwise
+        self.load_async = extra_config.get("load_async", self.bulk_pd_load)
         self._invalid_block_ids: set[int] = set()
         self._invalid_block_ids_lock = threading.Lock()
         self.consumer_is_to_put = extra_config.get("consumer_is_to_put", False)
@@ -250,7 +252,7 @@ class KVPoolWorker:
                 use_hybrid=self.use_hybrid,
                 grouped_block_size=self.grouped_block_size,
             )
-            if self.use_layerwise and self.layerwise_protocol is not None
+            if (self.use_layerwise or self.pool_pd) and self.layerwise_protocol is not None
             else None
         )
         self.kv_cache_group_families = infer_group_cache_families(kv_cache_groups, self.compress_ratios, self.hf_config)
@@ -819,7 +821,7 @@ class KVPoolWorker:
                     ready_event,
                     invalid_block_ids=self._invalid_block_ids,
                     invalid_block_ids_lock=self._invalid_block_ids_lock,
-                    worker=self if self.tp_mismatch else None,
+                    worker=self if self.tp_mismatch or self.bulk_pd_load else None,
                     record_operation=self._record_kv_connector_operation,
                 )
                 self.kv_recv_thread.start()
@@ -1108,7 +1110,7 @@ class KVPoolWorker:
         if self.use_layerwise_transfer:
             self.m_store.ensure_initialized()
         self.m_store.register_buffer(ptrs, lengths)
-        if self.use_block_key_layerwise:
+        if self.use_block_key_layerwise or (self.bulk_pd_load and self.layerwise_data_plane == "block_key"):
             self.m_store.validate_layerwise_support()
         self._start_kv_transfer_threads()
 
@@ -1139,6 +1141,15 @@ class KVPoolWorker:
                     request.req_id,
                     "no_load_spec" if load_spec is None else f"can_load={load_spec.can_load}",
                 )
+                continue
+            if self.bulk_pd_load:
+                # A one-token prompt has no external computed tokens for the
+                # scheduler to wait on. Restore that page before its forward.
+                if self.load_async and load_spec.kvpool_cached_tokens > load_spec.vllm_cached_tokens:
+                    assert self.kv_recv_thread is not None
+                    self.kv_recv_thread.add_request(request)
+                else:
+                    self._load_pd_snapshot(request)
                 continue
             request.skip_null_blocks_by_group = self.group_uses_align_state
             load_group_ids = request.kv_cache_group_ids or [0]
@@ -1509,6 +1520,114 @@ class KVPoolWorker:
                     == getattr(self, "group_num_layers", {}).get(group_id, self.num_layers) - 1,
                 )
             )
+
+    def _load_pd_snapshot(self, request: ReqMeta) -> None:
+        """Restore every layer before scheduling D's one-token replay.
+
+        P's layerwise objects concatenate full physical KV pages. The tail
+        uses the same layout; attention masks the unused token slots. Reuse
+        P's object IDs, not D's local prefix hashes or the ordinary pool keys.
+        """
+        transfer = request.pd_transfer
+        if transfer is None or len(request.block_ids_by_group) != 1:
+            raise ValueError("Bulk pool PD requires a snapshot and one KV cache group")
+        object_ids = list(transfer["block_hashes"])
+        if transfer["tail_tokens"]:
+            object_ids.append(transfer["tail_id"])
+        block_ids = request.block_ids_by_group[0]
+        if len(block_ids) < len(object_ids):
+            raise ValueError("Bulk pool PD has insufficient destination blocks")
+        keys = [self._make_layerwise_full_key(0, object_id) for object_id in object_ids]
+        addrs, sizes, offsets = [], [], []
+        for index in range(len(keys)):
+            addr, size, _ = self.token_database.prepare_value(
+                index * self.block_size,
+                (index + 1) * self.block_size,
+                block_ids,
+                block_id=block_ids[index],
+            )
+            if not size or any(value <= 0 for value in size):
+                raise ValueError("Bulk pool PD has an empty destination page")
+            addrs.append(addr)
+            sizes.append(size)
+            offsets.append(np.cumsum([0, *size[:-1]], dtype=np.int64).tolist())
+        start = time.perf_counter()
+        if self.layerwise_data_plane == "gva":
+            self._load_pd_gvas(keys, addrs, sizes, offsets)
+        else:
+            self._load_pd_ranges(keys, addrs, sizes, offsets)
+        self._record_kv_connector_operation("load_get", time.perf_counter() - start, len(keys))
+        logger.info("POOL_PD_BULK_LOAD request=%s objects=%d layers=%d", request.req_id, len(keys), self.num_layers)
+
+    def _load_pd_ranges(self, keys, addrs, sizes, offsets) -> None:
+        """Pin Mooncake objects and submit all layer buffers in each batch."""
+        leased = []
+        try:
+            for batch in self._layerwise_key_batches(keys):
+                results = self.m_store.batch_get_start(batch)
+                leased.extend(key for key, result in zip(batch, results) if result == 0)
+                require_aligned_batch_results("bulk_get_start", batch, results)
+                if any(result != 0 for result in results):
+                    raise RuntimeError("Bulk pool PD failed to acquire readable objects")
+            for batch, buffers, lengths, ranges in KVTransferThread._range_transfer_batches(
+                keys, addrs, sizes, offsets, self.layerwise_max_transfer_blocks, self.layerwise_max_transfer_bytes
+            ):
+                results = require_aligned_batch_results(
+                    "bulk_copy_get", batch, self.m_store.batch_copy_get(batch, buffers, lengths, ranges)
+                )
+                if any(result < 0 for result in results):
+                    raise RuntimeError("Bulk pool PD KV transfer failed")
+        finally:
+            release_failed = False
+            for batch in self._layerwise_key_batches(leased):
+                if self.m_store.batch_get_end(batch) != 0:
+                    release_failed = True
+            if release_failed:
+                raise RuntimeError("Bulk pool PD failed to release read sessions")
+
+    def _load_pd_gvas(self, keys, addrs, sizes, offsets) -> None:
+        """Read committed MemCache GVAs while holding process-scoped leases."""
+        leased = []
+        try:
+            object_info = {}
+            # Acquire each object once even when byte limits split its ranges
+            # over multiple copy calls. A process-scoped lease is not a refcount.
+            for batch in self._layerwise_key_batches(keys):
+                results = self.m_store.batch_add_lease(batch, LAYERWISE_READ_LEASE_TTL_MS)
+                leased.extend(key for key, result in zip(batch, results) if result == 0)
+                require_aligned_batch_results("bulk_add_lease", batch, results)
+                if any(result != 0 for result in results):
+                    raise RuntimeError("Bulk pool PD failed to acquire readable objects")
+                infos = self.m_store.batch_get_key_info(batch)
+                if len(infos) != len(batch):
+                    raise RuntimeError("Bulk pool PD key metadata result count mismatch")
+                for key, info in zip(batch, infos, strict=True):
+                    base_gvas = info.gva_list()
+                    if not base_gvas or base_gvas[0] <= 0:
+                        raise RuntimeError("Bulk pool PD object layout is incomplete")
+                    object_info[key] = (base_gvas[0], info.size())
+            for key, size_row in zip(keys, sizes, strict=True):
+                if object_info[key][1] < sum(size_row):
+                    raise RuntimeError("Bulk pool PD object layout is incomplete")
+            for batch, buffers, lengths, ranges in KVTransferThread._range_transfer_batches(
+                keys, addrs, sizes, offsets, self.layerwise_max_transfer_blocks, self.layerwise_max_transfer_bytes
+            ):
+                gvas, destinations, copy_sizes = [], [], []
+                for key, addr_row, size_row, offset_row in zip(batch, buffers, lengths, ranges, strict=True):
+                    gvas.extend(object_info[key][0] + offset for offset in offset_row)
+                    destinations.extend(addr_row)
+                    copy_sizes.extend(size_row)
+                assert self.m_store.store is not None
+                # MemCache direction 1 is global-to-local, as in KVTransferThread.
+                if self.m_store.store.batch_copy(gvas, destinations, copy_sizes, 1) != 0:
+                    raise RuntimeError("Bulk pool PD KV transfer failed")
+        finally:
+            release_failed = False
+            for batch in self._layerwise_key_batches(leased):
+                if self.m_store.batch_remove_lease(batch) != 0:
+                    release_failed = True
+            if release_failed:
+                raise RuntimeError("Bulk pool PD failed to release read leases")
 
     def _make_layerwise_full_key(self, group_id: int, block_hash_hex: str) -> str:
         """Use the backend-bound layout shared with scheduler hit checks."""
@@ -3125,6 +3244,8 @@ class KVPoolWorker:
 
         done_recving = set()
         if self.kv_recv_thread is not None:
+            if self.bulk_pd_load:
+                self.kv_recv_thread.raise_if_failed()
             self.kv_recv_thread.discard_finished_requests(meta.preempted_req_ids)
             if self.load_async:
                 done_recving = self.kv_recv_thread.get_and_clear_finished_requests(meta.loading_req_ids)

@@ -21,15 +21,15 @@ from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pd_transfer import
 from vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_scheduler import KVPoolScheduler
 
 
-def make_scheduler(role="kv_producer", use_v2=False, backend="mooncake"):
-    config = make_config(role, {"backend": backend, "pool_pd": True})
+def make_scheduler(role="kv_producer", use_v2=False, backend="mooncake", use_layerwise=True, extra_config=None):
+    config = make_config(role, {"backend": backend, "pool_pd": True, **(extra_config or {})})
     config.speculative_config = None
     config.model_config.dtype = "bfloat16"
     config.model_config.revision = None
     config.cache_config.cache_dtype = "auto"
     config.use_v2_model_runner = use_v2
     with patch("vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_scheduler.importlib"):
-        scheduler = KVPoolScheduler(config, use_layerwise=True)
+        scheduler = KVPoolScheduler(config, use_layerwise=use_layerwise)
     scheduler.store_scheduler.batch_is_committed.side_effect = lambda keys: [True] * len(keys)
     return scheduler
 

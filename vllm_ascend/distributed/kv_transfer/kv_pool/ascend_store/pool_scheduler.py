@@ -76,6 +76,7 @@ class KVPoolScheduler:
         self.use_layerwise = use_layerwise
         self.kv_cache_config = kv_cache_config
         extra_config = vllm_config.kv_transfer_config.kv_connector_extra_config
+        self.pool_pd = extra_config.get("pool_pd", False) is True
         backend_name = str(extra_config.get("backend", "mooncake"))
         self.backend_name = backend_name.lower()
         self.layerwise_protocol = get_layerwise_protocol(self.backend_name)
@@ -107,7 +108,8 @@ class KVPoolScheduler:
         self.consumer_is_to_put = vllm_config.kv_transfer_config.kv_connector_extra_config.get(
             "consumer_is_to_put", False
         )
-        self.load_async = vllm_config.kv_transfer_config.kv_connector_extra_config.get("load_async", False)
+        self.bulk_pd_load = self.pool_pd and self.kv_role == "kv_consumer" and not self.use_layerwise
+        self.load_async = extra_config.get("load_async", self.bulk_pd_load)
         kv_event_config = vllm_config.kv_events_config
         self.enable_kv_events = bool(kv_event_config and kv_event_config.enable_kv_cache_events)
         retention_interval = getattr(envs, "VLLM_PREFIX_CACHE_RETENTION_INTERVAL", None)
@@ -182,7 +184,7 @@ class KVPoolScheduler:
                 use_hybrid=self.use_hybrid,
                 grouped_block_size=self.grouped_block_size,
             )
-            if self.use_layerwise and self.layerwise_protocol is not None
+            if (self.use_layerwise or self.pool_pd) and self.layerwise_protocol is not None
             else None
         )
         validate_layerwise_runtime(
@@ -253,13 +255,13 @@ class KVPoolScheduler:
         self.model_name = model_config.model.split("/")[-1]
 
         self.client: LookupKeyClient | None = None
-        self.pool_pd = vllm_config.kv_transfer_config.kv_connector_extra_config.get("pool_pd", False) is True
         self._pd_transfers: dict[str, PoolPDTransfer] = {}
         if self.pool_pd:
             if (
-                not (self.use_block_key_layerwise or self.use_layerwise_transfer)
+                (self.kv_role == "kv_producer" and not self.use_layerwise)
                 or self.backend_name not in ("mooncake", "memcache")
                 or self.use_hybrid
+                or len(self.grouped_block_size) != 1
                 or self.pp_size != 1
                 or self.pcp_size != 1
                 or self.dcp_size != 1
@@ -271,7 +273,7 @@ class KVPoolScheduler:
                 or getattr(vllm_config, "use_v2_model_runner", False) is True
             ):
                 raise ValueError(
-                    "Pool PD v1 requires the V1 runner, Mooncake/MemCache layerwise, matching TP, "
+                    "Pool PD v1 requires the V1 runner, Mooncake/MemCache with layerwise P writes, matching TP, "
                     "one full-attention group, "
                     "PP/CP=1, no speculative decoding, and separate producer/consumer roles"
                 )
@@ -351,7 +353,8 @@ class KVPoolScheduler:
             transfer.num_tokens,
             transfer.tail_tokens,
         )
-        return max(cached_tokens - num_computed_tokens, 0), False
+        num_external_tokens = max(cached_tokens - num_computed_tokens, 0)
+        return num_external_tokens, self.bulk_pd_load and self.load_async and num_external_tokens > 0
 
     def _get_or_create_request_tracker(self, req_id: str) -> RequestTracker:
         tracker = self._request_trackers.get(req_id)
@@ -817,7 +820,7 @@ class KVPoolScheduler:
         if num_external_tokens == 0:
             # No need to load anything
             load_spec = self.load_specs[request.request_id]
-            self.load_specs[request.request_id].can_load = self.use_layerwise and (
+            self.load_specs[request.request_id].can_load = (self.use_layerwise or self.bulk_pd_load) and (
                 load_spec.kvpool_cached_tokens > 0 or bool(load_spec.kvpool_store_skip_tokens)
             )
             logger.debug(
@@ -1024,6 +1027,8 @@ class KVPoolScheduler:
         if not load_spec:
             return None
         num_tokens_to_compute = load_spec.kvpool_cached_tokens
+        if self.bulk_pd_load:
+            num_tokens_to_compute = self._pd_transfers[request_id].num_tokens
         if (num_tokens_to_compute % self._block_size != 0) and (
             num_tokens_to_compute == len(request.prompt_token_ids) - 1
         ):
@@ -1041,6 +1046,10 @@ class KVPoolScheduler:
             block_sizes=self.grouped_block_size,
         )
         self._request_trackers[request_id] = request_tracker
+        if self.bulk_pd_load:
+            return self._build_req_meta(
+                request_tracker, request.block_hashes, load_spec, request.prompt_token_ids, True
+            )
         return ReqMeta.from_request_tracker(
             request_tracker,
             self.cache_transfer_granularity,

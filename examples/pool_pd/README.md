@@ -3,7 +3,7 @@
 This opt-in prototype uses one `AscendStoreConnector` on each instance:
 P computes the prompt and saves KV to Mooncake Store or MemCache; the proxy waits for a
 committed snapshot and sends the original prompt and snapshot descriptor to D.
-D loads KV layer by layer, retains it in HBM, and replays the final prompt token
+D restores all KV layers before computation, retains them in HBM, and replays the final prompt token
 to obtain logits. The token sampled by P is discarded.
 
 Complete blocks retain the existing content-addressed pool keys. An incomplete
@@ -21,6 +21,10 @@ bounded pool until normal backend eviction.
 - Dedicated pool namespace and identical model files, KV dtype, and layout on P/D.
 - P must generate exactly one token; use the proxy to enforce this contract.
 - Set `VLLM_USE_V2_MODEL_RUNNER=0`; the launch script selects the supported V1 runner.
+- Set P's `use_layerwise: true` and D's `use_layerwise: false`. D defaults to
+  `load_async: true`: the scheduler waits for the complete restore before
+  scheduling the final-token replay. A one-token prompt is restored synchronously
+  before forward because it has no externally cached tokens to wait on.
 - Prototype failure handling: an incomplete P snapshot returns HTTP 502 through
   the proxy. A missing or invalid D snapshot fails closed; restart D if its engine
   exits. Pool eviction/retry recovery is follow-up work. Streaming starts after
@@ -104,10 +108,13 @@ The default remains full prefill. Only complete blocks count as reusable prefix;
 the final partial block belongs to the new prompt snapshot. D still validates
 and restores the complete snapshot and replays one prompt token.
 
-The V1 runner executes synchronous layerwise KV restoration eagerly. Subsequent
-decode steps can replay graphs. `AscendStoreConnector` currently requires
-`PIECEWISE`, with compilation mode 3, when layerwise transfer is enabled; remove
-`--enforce-eager` and use that supported configuration for graph experiments.
+P's layerwise KV restoration executes eagerly in the V1 runner. The example keeps
+P eager and configures D with compilation mode 3 and `FULL` graphs. D reads P's
+whole-block objects using their existing layer offsets, including the physical
+tail page. It restores all layers in bulk outside model forward, then schedules
+the one-token replay. No attention-layer load hooks run on D, and subsequent
+decode steps perform no pool reads. Setting D's `use_layerwise: true` retains
+the earlier layerwise load path, which requires `PIECEWISE` graphs.
 Verify graph capture and an actual `ACL graph replay is active` log message,
 and use the same graph settings on both sides of a performance comparison.
 
@@ -137,7 +144,7 @@ python examples/pool_pd/validate.py --url http://127.0.0.1:18082 \
 The cases cover 1, 127, 128, 129, 255, 256, 257, and 513 prompt tokens plus a
 repeated prompt. The validator compares every generated token ID. Check
 `POOL_PD_SAVE ... status=ready` in P logs and `POOL_PD_LOAD ... replay_tokens=1`
-in D logs to distinguish transfer from prompt recomputation. Enable the existing
+in D logs, plus `POOL_PD_BULK_LOAD`, to distinguish transfer from prompt recomputation. Enable the existing
 `VLLM_ASCEND_KVPOOL_RANGE_DEBUG=1` option when byte-range evidence is needed.
 Use the same chunk size in the baseline and PD runs. BF16 MoE output is not
 guaranteed to be invariant to prefill chunking or reuse of an existing prefix.
@@ -149,8 +156,12 @@ guaranteed to be invariant to prefill chunking or reuse of an existing prefix.
   `N-1` externally cached tokens; P creates the descriptor.
 - `KVPoolScheduler.request_finished`: P publishes `kv_transfer_params.pool_pd`
   only after every prompt object is readable.
-- `ReqMeta.pd_transfer`: transports snapshot metadata to workers; existing
-  layerwise session methods use P's complete-block hashes and tail key on D.
+- `ReqMeta.pd_transfer`: transports snapshot metadata to workers; D uses P's
+  complete-block hashes and tail key for bulk reads, independent of D's request ID.
+- `KVPoolWorker._load_pd_snapshot`: restores all physical layer pages via
+  Mooncake range reads or leased MemCache GVA copies. An asynchronous restore
+  reports completion only after all copies and lease releases succeed; errors
+  fail the engine rather than exposing incomplete KV to attention.
 - `pool_pd: true`: enables the path without changing default pool behavior.
 - `prepare_pool_pd_forward`: makes the V1 model runner prepare layerwise sessions
   before attention even on P with zero cache hits. Recent vLLM otherwise defers
@@ -167,6 +178,9 @@ Source is under `/workspace/vllm-ascend` and `/workspace/vllm`; the read-only
 model is `/models/Qwen3-30B-A3B`. P uses card 0, D uses card 1. The proxy listens
 on `127.0.0.1:18082`; P/D listen on 18080/18081. Logs and validation JSON are
 under `/workspace/logs`. No external HTTP listener is required.
+
+The measurements below used the earlier D layerwise load implementation. They
+do not validate D bulk loading or establish its performance with FULL graphs.
 
 ## Verification on 2026-09-25
 
