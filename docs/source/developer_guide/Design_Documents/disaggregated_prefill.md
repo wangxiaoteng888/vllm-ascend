@@ -83,6 +83,9 @@ To enable this mode, set `"kv_connector": "MooncakeD2RHConnectorV1"` in
 settings consistent with the deployment and reserve enough host memory on D
 for staging.
 
+For startup scripts and a proxy example, see
+[DeepSeek-V4-Flash D2RH deployment](../../tutorials/models/DeepSeek-V4-Flash.md#524-d2rh-deployment-on-950pr-and-950dt).
+
 ### 3. Interface Design
 
 Taking MooncakeConnector as an example, the system is organized into three primary classes:
