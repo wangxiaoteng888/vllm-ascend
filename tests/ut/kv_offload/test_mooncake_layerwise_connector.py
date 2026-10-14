@@ -44,6 +44,10 @@ for k in list(sys.modules):
             _to_remove.append(k)
     elif k.startswith(_vllm_kv_xfer):
         _to_remove.append(k)
+    elif k == "vllm.v1.worker.kv_connector_model_runner_mixin":
+        # Reload the runner alongside its base class to preserve isinstance
+        # identity when another test imported the runner before this module.
+        _to_remove.append(k)
 for _m in _to_remove:
     _saved_modules[_m] = sys.modules.pop(_m)
 
