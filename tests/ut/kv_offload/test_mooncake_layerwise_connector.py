@@ -1683,10 +1683,10 @@ class TestMooncakeLayerwiseConnectorWorker(unittest.TestCase):
                 group = worker.kv_cache_config.kv_cache_groups[0]
                 group.layer_names.append(indexer_name)
                 group.kv_cache_spec.kv_cache_specs[indexer_name] = MagicMock()
-                caches = {}
+                caches: dict[str, tuple[MagicMock, ...]] = {}
                 # Register indexer first to check it never selects quant staging.
                 for name, count in ((indexer_name, 2), (layer_name, 1)):
-                    tensors = []
+                    tensors: list[MagicMock] = []
                     for _ in range(count):
                         cache = MagicMock()
                         cache.shape = (10, 16, 1, 128)
