@@ -44,10 +44,6 @@ for k in list(sys.modules):
             _to_remove.append(k)
     elif k.startswith(_vllm_kv_xfer):
         _to_remove.append(k)
-    elif k == "vllm.v1.worker.kv_connector_model_runner_mixin":
-        # Reload the runner alongside its base class to preserve isinstance
-        # identity when another test imported the runner before this module.
-        _to_remove.append(k)
 for _m in _to_remove:
     _saved_modules[_m] = sys.modules.pop(_m)
 
@@ -57,6 +53,7 @@ from vllm_ascend.core.kv_cache_interface import AscendMLAAttentionSpec  # noqa: 
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_layerwise_connector import (  # noqa: E402
     KVCacheRecvingLayerThread,
     KVCacheSendingLayerThread,
+    KVConnectorBase_V1,
     KVConnectorRole,
     LayerMetadata,
     MLAAttentionSpec,
@@ -1448,6 +1445,10 @@ class TestMooncakeLayerwiseStepLifecycle(unittest.TestCase):
         with (
             patch.dict(
                 runner_globals,
+                # The isolated connector imports above create a fresh base
+                # class. Scope its runner binding to this test; reloading the
+                # shared runner leaks through its parent package to other tests.
+                KVConnectorBase=KVConnectorBase_V1,
                 get_kv_transfer_group=lambda: self.connector,
                 get_forward_context=lambda: SimpleNamespace(),
             ),
@@ -1491,6 +1492,16 @@ class TestMooncakeLayerwiseStepLifecycle(unittest.TestCase):
 
     def test_pre_forward_load_does_not_prepare_twice(self):
         self._run_producer_steps(has_sync_kv_loads=True)
+
+    def test_runner_base_binding_is_restored_for_other_connectors(self):
+        runner_globals = KVConnectorModelRunnerMixin._get_kv_connector_output.__wrapped__.__globals__
+
+        class PreviouslyImportedBase:
+            pass
+
+        with patch.dict(runner_globals, KVConnectorBase=PreviouslyImportedBase):
+            self._run_producer_steps(has_sync_kv_loads=False)
+            self.assertIs(runner_globals["KVConnectorBase"], PreviouslyImportedBase)
 
     def test_empty_producer_step_resets_state_without_sending(self):
         self.worker.current_layer = 2
