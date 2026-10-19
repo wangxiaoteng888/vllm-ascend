@@ -1110,23 +1110,12 @@ D2RH stages KV cache in the Decode node's host memory before loading it into
 HBM. See the [D2RH workflow](../../developer_guide/Design_Documents/disaggregated_prefill.md#mooncake-d2rh-connector)
 for the transfer sequence and cache-hit behavior.
 
-This example uses two nodes, with **DP4/TP1/PP1 and EP on each node**, four visible
-devices per node, and UBoE enabled. It adapts the DSpark deployment above to
-`MooncakeD2RHConnectorV1`; it is not a drop-in A2/A3 configuration.
-
-Before starting:
-
-- Prepare compatible vLLM, vLLM Ascend, CANN, and Mooncake environments on both
-  nodes, with UBoE connectivity and the D2RH connector available. Use the same
-  software versions and checkpoint on P and D.
-- Prepare the `DeepSeek-V4-Flash-0731-w4a4c8` weights described in
-  [Model Weight](#31-model-weight). The scripts use DSpark with five speculative
-  tokens on both sides; check that the checkpoint supports this setting.
-- Source the container's Ascend environment before running the commands below.
-- Check available host RAM and container memory limits on D. D2RH allocates
-  pinned staging memory per worker based on its KV-cache layout; budget for all
-  four local ranks, in addition to model loading and process memory. The default
-  HBM utilization of 0.9 is a starting point, not a host-memory capacity guarantee.
+**Memory limitation:** D2RH currently registers a pinned host KV cache on each
+Decode worker with the same capacity as its device KV cache, plus alignment
+overhead. This mirrors the KV cache, not the device's total HBM capacity.
+Ensure that available host RAM and container memory limits cover the combined
+allocation of all local Decode ranks, with headroom for model loading and other
+process memory.
 
 **1. Start P and D in separate terminals on their respective nodes.**
 
