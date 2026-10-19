@@ -92,7 +92,7 @@ settings consistent with the deployment and reserve enough host memory on D
 for staging.
 
 For startup scripts and a proxy example, see
-[DeepSeek-V4-Flash D2RH deployment](../../tutorials/models/DeepSeek-V4-Flash.md#524-d2rh-deployment-on-atlas-850e).
+[D2RH deployment on Atlas 850E](../../tutorials/features/pd_disaggregation_mooncake_multi_node.md#d2rh-deployment-on-atlas-850e-a5-uboe).
 
 ### 3. Interface Design
 
