@@ -1104,11 +1104,6 @@ Common Issues Tip: If you encounter issues with PD separation deployment, please
 
 For ultra-long sequence scenarios, support can be achieved by adjusting the PD (Prefill/Decode) ratio and the model parallelism strategy. For example, in a 1M sequence scenario, a 1\*4P-1\*4D ratio can be used, with the model parallelism set to DP4TP8 mode.
 
-#### 5.2.4 D2RH Deployment on Atlas 850E
-
-For the validated A5 (Atlas 850E) UBoE configuration, launch scripts, and memory
-requirements, see [D2RH deployment](../features/pd_disaggregation_mooncake_multi_node.md#d2rh-deployment-on-atlas-850e-a5-uboe).
-
 ## 6 Functional Verification
 
 Once your server is started, you can query the model with input prompts:
