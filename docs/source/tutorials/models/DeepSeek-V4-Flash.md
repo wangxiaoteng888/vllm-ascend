@@ -1104,7 +1104,7 @@ Common Issues Tip: If you encounter issues with PD separation deployment, please
 
 For ultra-long sequence scenarios, support can be achieved by adjusting the PD (Prefill/Decode) ratio and the model parallelism strategy. For example, in a 1M sequence scenario, a 1\*4P-1\*4D ratio can be used, with the model parallelism set to DP4TP8 mode.
 
-#### 5.2.4 D2RH Deployment on 950PR and 950DT
+#### 5.2.4 D2RH Deployment on Atlas 850E
 
 D2RH stages KV cache in the Decode node's host memory before loading it into
 HBM. See the [D2RH workflow](../../developer_guide/Design_Documents/disaggregated_prefill.md#mooncake-d2rh-connector)
@@ -1316,7 +1316,7 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
 The scripts enable prefix caching on both sides, keep the hybrid KV cache
 manager enabled, and set
 `ASCEND_GLOBAL_RESOURCE_CONFIG='{"comm_resource_config.protocol_desc":["uboe:device"]}'`.
-They use FP8 indexer cache on 950PR/950DT, not the INT8 indexer setting from the
+They use FP8 indexer cache on Atlas 850E, not the INT8 indexer setting from the
 A2/A3 examples; see the [W4A4C8 FAQ](#q-how-do-the-w4a4c8-ultra-low-bit-quantized-weights-preserve-accuracy).
 P uses eager execution and D uses `FULL_DECODE_ONLY` graphs.
 `engine_id` is omitted so vLLM generates a UUID automatically for each engine.
