@@ -890,9 +890,9 @@ python launch_online_dp.py --dp-size 32 --tp-size 1 --dp-size-local 16 --dp-rank
 python launch_online_dp.py --dp-size 32 --tp-size 1 --dp-size-local 16 --dp-rank-start 16 --dp-address 192.0.0.3 --dp-rpc-port 12321 --vllm-start-port 7100
 ```
 
-## D2RH Deployment on Atlas 850E (A5, UBoE)
+## D2RH Deployment on Atlas 850E (UBoE)
 
-**Validation scope:** D2RH has only been validated with the A5 (Atlas 850E)
+**Validation scope:** D2RH has only been validated with the Atlas 850E
 UBoE configuration shown below, using DeepSeek-V4-Flash. Other hardware,
 network types, and deployment configurations have not been validated.
 
