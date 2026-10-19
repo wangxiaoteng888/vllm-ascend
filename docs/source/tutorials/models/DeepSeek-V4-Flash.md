@@ -1208,8 +1208,7 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
         "multistream_overlap_shared_expert": true,
         "enable_dsa_cp": false,
         "enable_flashcomm1": false
-    }' \
-    2>&1 | tee d2rh_prefill.log
+    }'
 ```
 
 On D:
@@ -1298,8 +1297,7 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
         "multistream_overlap_shared_expert": true,
         "enable_dsa_cp": false,
         "enable_flashcomm1": false
-    }' \
-    2>&1 | tee d2rh_decode.log
+    }'
 ```
 
 The scripts enable prefix caching on both sides, keep the hybrid KV cache
@@ -1308,14 +1306,12 @@ manager enabled, and set
 They use FP8 indexer cache on Atlas 850E, not the INT8 indexer setting from the
 A2/A3 examples; see the [W4A4C8 FAQ](#q-how-do-the-w4a4c8-ultra-low-bit-quantized-weights-preserve-accuracy).
 P uses eager execution and D uses `FULL_DECODE_ONLY` graphs.
-`engine_id` is omitted so vLLM generates a UUID automatically for each engine.
 
 The context limit is 133120 tokens, enough for 128K input plus 1K output, including
-any prompt-template tokens within that limit. Logs go to `d2rh_prefill.log` and
-`d2rh_decode.log`. Adjust `--gpu-memory-utilization` directly if needed.
+any prompt-template tokens within that limit.
+Adjust `--gpu-memory-utilization` directly if needed.
 Reducing it reduces available KV capacity and can reduce D's staging allocation;
-recheck both host
-memory and maximum request capacity after changing it.
+recheck both host memory and maximum request capacity after changing it.
 
 HTTP ports are 8100 (P) and 8200 (D); DP RPC ports are 12321 and 12322, and
 `kv_port` bases are 36010 and 36020. D2RH control-port bases default to 38100 and
