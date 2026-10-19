@@ -1153,9 +1153,6 @@ The proxy points at each node's single API endpoint; the server distributes
 requests across its local DP ranks. Do not also run `launch_online_dp.py` for
 this example. Keep these unauthenticated example endpoints on a trusted network.
 
-For request verification, follow [DeepSeek-V4-Flash Functional Verification](../models/DeepSeek-V4-Flash.md#6-functional-verification)
-using the proxy endpoint at port 8000.
-
 ## Example Proxy for Deployment
 
 Run a proxy server on the same node where your prefiller service instance is deployed. You can find the proxy implementation in the repository's examples directory.
