@@ -1126,7 +1126,7 @@ Before starting:
 - Check available host RAM and container memory limits on D. D2RH allocates
   pinned staging memory per worker based on its KV-cache layout; budget for all
   four local ranks, in addition to model loading and process memory. The default
-  HBM utilization of 0.85 is a starting point, not a host-memory capacity guarantee.
+  HBM utilization of 0.9 is a starting point, not a host-memory capacity guarantee.
 
 **1. Start P and D in separate terminals on their respective nodes.**
 
@@ -1166,8 +1166,6 @@ export TASK_QUEUE_ENABLE=1
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
 export ASCEND_GLOBAL_RESOURCE_CONFIG='{"comm_resource_config.protocol_desc":["uboe:device"]}'
-# For vLLM versions that support this environment variable.
-export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096
 
 # Ensure the model path matches the directory recorded during download
 vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
@@ -1180,7 +1178,7 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
     --enable-expert-parallel \
-    --gpu-memory-utilization 0.85 \
+    --gpu-memory-utilization 0.9 \
     --max-model-len 133120 \
     --max-num-batched-tokens 8192 \
     --max-num-seqs 32 \
@@ -1258,8 +1256,6 @@ export TASK_QUEUE_ENABLE=1
 export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
 export ASCEND_GLOBAL_RESOURCE_CONFIG='{"comm_resource_config.protocol_desc":["uboe:device"]}'
-# For vLLM versions that support this environment variable.
-export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096
 
 # Ensure the model path matches the directory recorded during download
 vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
@@ -1272,7 +1268,7 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
     --enable-expert-parallel \
-    --gpu-memory-utilization 0.85 \
+    --gpu-memory-utilization 0.9 \
     --max-model-len 133120 \
     --max-num-batched-tokens 1024 \
     --max-num-seqs 32 \
@@ -1324,13 +1320,6 @@ They use FP8 indexer cache on 950PR/950DT, not the INT8 indexer setting from the
 A2/A3 examples; see the [W4A4C8 FAQ](#q-how-do-the-w4a4c8-ultra-low-bit-quantized-weights-preserve-accuracy).
 P uses eager execution and D uses `FULL_DECODE_ONLY` graphs.
 `engine_id` is omitted so vLLM generates a UUID automatically for each engine.
-
-On vLLM versions that support it, `VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096`
-retains periodic sliding-window prefix-cache checkpoints every 4096 tokens.
-This is a cache-retention policy, not a timeout or a D2RH requirement, and it does
-not guarantee a D-local HBM hit. Newer vLLM versions use the
-`prefix_cache_retention_interval` cache configuration field instead; check the
-installed version before using this environment variable.
 
 The context limit is 133120 tokens, enough for 128K input plus 1K output, including
 any prompt-template tokens within that limit. Logs go to `d2rh_prefill.log` and
