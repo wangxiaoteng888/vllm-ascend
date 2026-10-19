@@ -1363,26 +1363,8 @@ The proxy points at each node's single API endpoint; the server distributes
 requests across its local DP ranks. Do not also run `launch_online_dp.py` for
 this example. Keep these unauthenticated example endpoints on a trusted network.
 
-**3. Verify an end-to-end request through the proxy.**
-
-In another terminal on the proxy host:
-
-```shell
-curl --noproxy '*' --fail http://127.0.0.1:8000/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{
-        "model": "dsv4",
-        "messages": [{"role": "user", "content": "What is 2 + 2?"}],
-        "max_tokens": 1024,
-        "temperature": 0
-    }'
-```
-
-Expect HTTP 200 and a response containing `choices`. Check D's log for
-`D2RH_HOST_CACHE` to confirm the staging path; its hit count refers to host
-memory, not D HBM. A short curl request checks connectivity, not long-context
-accuracy or throughput. Use the accuracy and performance evaluation sections
-below for those checks.
+For request verification, follow [Functional Verification](#6-functional-verification)
+using the proxy endpoint at port 8000.
 
 ## 6 Functional Verification
 
