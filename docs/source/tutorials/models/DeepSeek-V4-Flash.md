@@ -1135,26 +1135,22 @@ values. Run each script on its corresponding node.
 
 On P:
 
-```bash
-#!/usr/bin/env bash
+```shell
+set -eo pipefail
 
-set -euo pipefail
-
-export LOCAL_IP=192.0.2.10
-export NIC_NAME=eth0
-export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731-w4a4c8
-
-: "${LOCAL_IP:?Set LOCAL_IP to the reachable service IP of this node}"
-: "${NIC_NAME:?Set NIC_NAME to the corresponding network interface}"
-: "${MODEL_PATH:?Set MODEL_PATH to the local DSpark W4A4C8 checkpoint}"
-
-unset ftp_proxy https_proxy http_proxy FTP_PROXY HTTPS_PROXY HTTP_PROXY
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+unset FTP_PROXY HTTPS_PROXY HTTP_PROXY
 unset HCCL_INTRA_ROCE_ENABLE
 
-export HCCL_IF_IP="$LOCAL_IP"
-export GLOO_SOCKET_IFNAME="$NIC_NAME"
-export TP_SOCKET_IFNAME="$NIC_NAME"
-export HCCL_SOCKET_IFNAME="$NIC_NAME"
+nic_name="eth0" # change to your own NIC name
+local_ip=192.0.2.10 # change to your own IP
+
+export HCCL_IF_IP="$local_ip"
+export GLOO_SOCKET_IFNAME="$nic_name"
+export TP_SOCKET_IFNAME="$nic_name"
+export HCCL_SOCKET_IFNAME="$nic_name"
 export HCCL_ALGO=level0:fullmesh
 export HCCL_OP_EXPANSION_MODE=CCU_SCHED
 export VLLM_RPC_TIMEOUT=3600000
@@ -1167,22 +1163,24 @@ export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export TASK_QUEUE_ENABLE=1
-export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}"
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
 export ASCEND_GLOBAL_RESOURCE_CONFIG='{"comm_resource_config.protocol_desc":["uboe:device"]}'
+# For vLLM versions that support this environment variable.
 export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096
 
-vllm serve "$MODEL_PATH" \
-    --host "$LOCAL_IP" \
+# Ensure the model path matches the directory recorded during download
+vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
+    --host "$local_ip" \
     --port 8100 \
     --served-model-name dsv4 \
     --data-parallel-size 4 \
-    --data-parallel-address "$LOCAL_IP" \
+    --data-parallel-address "$local_ip" \
     --data-parallel-rpc-port 12321 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
     --enable-expert-parallel \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.85}" \
+    --gpu-memory-utilization 0.85 \
     --max-model-len 133120 \
     --max-num-batched-tokens 8192 \
     --max-num-seqs 32 \
@@ -1201,13 +1199,20 @@ vllm serve "$MODEL_PATH" \
     --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":128}' \
     --speculative-config '{"method":"dspark","num_speculative_tokens":5,"enforce_eager":true}' \
     --enforce-eager \
-    --kv-transfer-config '{
+    --kv-transfer-config \
+    '{
         "kv_connector": "MooncakeD2RHConnectorV1",
         "kv_role": "kv_producer",
         "kv_port": "36010",
         "kv_connector_extra_config": {
-            "prefill": {"dp_size": 4, "tp_size": 1},
-            "decode": {"dp_size": 4, "tp_size": 1}
+            "prefill": {
+                "dp_size": 4,
+                "tp_size": 1
+            },
+            "decode": {
+                "dp_size": 4,
+                "tp_size": 1
+            }
         }
     }' \
     --additional-config '{
@@ -1217,31 +1222,27 @@ vllm serve "$MODEL_PATH" \
         "enable_dsa_cp": false,
         "enable_flashcomm1": false
     }' \
-    2>&1 | tee "${LOG_FILE:-d2rh_prefill.log}"
+    2>&1 | tee d2rh_prefill.log
 ```
 
 On D:
 
-```bash
-#!/usr/bin/env bash
+```shell
+set -eo pipefail
 
-set -euo pipefail
-
-export LOCAL_IP=192.0.2.20
-export NIC_NAME=eth0
-export MODEL_PATH=/path/to/DeepSeek-V4-Flash-0731-w4a4c8
-
-: "${LOCAL_IP:?Set LOCAL_IP to the reachable service IP of this node}"
-: "${NIC_NAME:?Set NIC_NAME to the corresponding network interface}"
-: "${MODEL_PATH:?Set MODEL_PATH to the local DSpark W4A4C8 checkpoint}"
-
-unset ftp_proxy https_proxy http_proxy FTP_PROXY HTTPS_PROXY HTTP_PROXY
+unset ftp_proxy
+unset https_proxy
+unset http_proxy
+unset FTP_PROXY HTTPS_PROXY HTTP_PROXY
 unset HCCL_INTRA_ROCE_ENABLE
 
-export HCCL_IF_IP="$LOCAL_IP"
-export GLOO_SOCKET_IFNAME="$NIC_NAME"
-export TP_SOCKET_IFNAME="$NIC_NAME"
-export HCCL_SOCKET_IFNAME="$NIC_NAME"
+nic_name="eth0" # change to your own NIC name
+local_ip=192.0.2.20 # change to your own IP
+
+export HCCL_IF_IP="$local_ip"
+export GLOO_SOCKET_IFNAME="$nic_name"
+export TP_SOCKET_IFNAME="$nic_name"
+export HCCL_SOCKET_IFNAME="$nic_name"
 export HCCL_ALGO=level0:fullmesh
 export HCCL_OP_EXPANSION_MODE=CCU_SCHED
 export VLLM_RPC_TIMEOUT=3600000
@@ -1254,22 +1255,24 @@ export OMP_PROC_BIND=false
 export OMP_NUM_THREADS=10
 export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export TASK_QUEUE_ENABLE=1
-export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}"
+export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
 export ASCEND_LOCAL_COMM_RES='{"version":"1.3"}'
 export ASCEND_GLOBAL_RESOURCE_CONFIG='{"comm_resource_config.protocol_desc":["uboe:device"]}'
+# For vLLM versions that support this environment variable.
 export VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096
 
-vllm serve "$MODEL_PATH" \
-    --host "$LOCAL_IP" \
+# Ensure the model path matches the directory recorded during download
+vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
+    --host "$local_ip" \
     --port 8200 \
     --served-model-name dsv4 \
     --data-parallel-size 4 \
-    --data-parallel-address "$LOCAL_IP" \
+    --data-parallel-address "$local_ip" \
     --data-parallel-rpc-port 12322 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
     --enable-expert-parallel \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.85}" \
+    --gpu-memory-utilization 0.85 \
     --max-model-len 133120 \
     --max-num-batched-tokens 1024 \
     --max-num-seqs 32 \
@@ -1288,13 +1291,20 @@ vllm serve "$MODEL_PATH" \
     --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":128}' \
     --speculative-config '{"method":"dspark","num_speculative_tokens":5,"enforce_eager":true}' \
     --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-    --kv-transfer-config '{
+    --kv-transfer-config \
+    '{
         "kv_connector": "MooncakeD2RHConnectorV1",
         "kv_role": "kv_consumer",
         "kv_port": "36020",
         "kv_connector_extra_config": {
-            "prefill": {"dp_size": 4, "tp_size": 1},
-            "decode": {"dp_size": 4, "tp_size": 1}
+            "prefill": {
+                "dp_size": 4,
+                "tp_size": 1
+            },
+            "decode": {
+                "dp_size": 4,
+                "tp_size": 1
+            }
         }
     }' \
     --additional-config '{
@@ -1304,7 +1314,7 @@ vllm serve "$MODEL_PATH" \
         "enable_dsa_cp": false,
         "enable_flashcomm1": false
     }' \
-    2>&1 | tee "${LOG_FILE:-d2rh_decode.log}"
+    2>&1 | tee d2rh_decode.log
 ```
 
 The scripts enable prefix caching on both sides, keep the hybrid KV cache
@@ -1315,11 +1325,18 @@ A2/A3 examples; see the [W4A4C8 FAQ](#q-how-do-the-w4a4c8-ultra-low-bit-quantize
 P uses eager execution and D uses `FULL_DECODE_ONLY` graphs.
 `engine_id` is omitted so vLLM generates a UUID automatically for each engine.
 
+On vLLM versions that support it, `VLLM_PREFIX_CACHE_RETENTION_INTERVAL=4096`
+retains periodic sliding-window prefix-cache checkpoints every 4096 tokens.
+This is a cache-retention policy, not a timeout or a D2RH requirement, and it does
+not guarantee a D-local HBM hit. Newer vLLM versions use the
+`prefix_cache_retention_interval` cache configuration field instead; check the
+installed version before using this environment variable.
+
 The context limit is 133120 tokens, enough for 128K input plus 1K output, including
 any prompt-template tokens within that limit. Logs go to `d2rh_prefill.log` and
-`d2rh_decode.log`; set `LOG_FILE` to change the path. Set
-`GPU_MEMORY_UTILIZATION` before launching to override 0.85. Reducing it reduces
-available KV capacity and can reduce D's staging allocation; recheck both host
+`d2rh_decode.log`. Adjust `--gpu-memory-utilization` directly if needed.
+Reducing it reduces available KV capacity and can reduce D's staging allocation;
+recheck both host
 memory and maximum request capacity after changing it.
 
 HTTP ports are 8100 (P) and 8200 (D); DP RPC ports are 12321 and 12322, and
@@ -1333,7 +1350,7 @@ ports. For multiple instances on one host, use non-overlapping ranges and set
 
 On a host that can reach both nodes, from the repository root:
 
-```bash
+```shell
 unset http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY
 export P_IP=192.0.2.10
 export D_IP=192.0.2.20
@@ -1353,7 +1370,7 @@ this example. Keep these unauthenticated example endpoints on a trusted network.
 
 In another terminal on the proxy host:
 
-```bash
+```shell
 curl --noproxy '*' --fail http://127.0.0.1:8000/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{
