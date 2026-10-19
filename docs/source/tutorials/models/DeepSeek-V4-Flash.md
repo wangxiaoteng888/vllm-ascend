@@ -1106,6 +1106,8 @@ For ultra-long sequence scenarios, support can be achieved by adjusting the PD (
 
 #### 5.2.4 D2RH Deployment on Atlas 850E
 
+This deployment uses Atlas 850E nodes connected through a UBoE network.
+
 D2RH stages KV cache in the Decode node's host memory before loading it into
 HBM. See the [D2RH workflow](../../developer_guide/Design_Documents/disaggregated_prefill.md#mooncake-d2rh-connector)
 for the transfer sequence and cache-hit behavior.
