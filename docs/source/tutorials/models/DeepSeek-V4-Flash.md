@@ -1277,6 +1277,8 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
         "kv_role": "kv_consumer",
         "kv_port": "36020",
         "kv_connector_extra_config": {
+            "d2rh_zmq_port": 38100,
+            "d2rh_scheduler_ready_port": 38200,
             "prefill": {
                 "dp_size": 4,
                 "tp_size": 1
@@ -1310,11 +1312,36 @@ Reducing it reduces available KV capacity and can reduce D's staging allocation;
 recheck both host memory and maximum request capacity after changing it.
 
 HTTP ports are 8100 (P) and 8200 (D); DP RPC ports are 12321 and 12322, and
-`kv_port` bases are 36010 and 36020. D2RH control-port bases default to 38100 and
-38200, with rank offsets. Reserve these ranges and the transport's communication
-ports. For multiple instances on one host, use non-overlapping ranges and set
-`d2rh_zmq_port` and `d2rh_scheduler_ready_port` in
-`kv_connector_extra_config` when needed.
+`kv_port` bases are 36010 and 36020. The Decode script explicitly sets two
+additional TCP/ZMQ control-port bases in `kv_connector_extra_config`:
+
+- `d2rh_zmq_port` (default: `38100`): Each D worker listens for `START_PULL`
+  requests from its local scheduler. These requests trigger staging of the
+  required KV cache into D host memory, reusing valid host-cache entries when
+  available. This port carries control messages, not the KV data itself.
+- `d2rh_scheduler_ready_port` (default: `38200`): Each D scheduler listens for
+  worker notifications that host staging is ready. Once the required workers
+  report readiness, the request can proceed to device-block allocation and
+  H2D loading. This notification does not mean that H2D or decoding has finished.
+
+These are base ports, not single ports shared by all ranks. For this
+DP4/TP1/PP1 deployment, D uses `38100-38103` for pull requests and
+`38200-38203` for scheduler-ready notifications, with one port per DP rank in
+each range. Other parallelism layouts introduce additional rank offsets;
+reserve the full ranges for the deployment. Both settings are D-side controls
+and do not need to be duplicated in the P script.
+
+These ports are independent of `kv_port`, which is still used for Mooncake
+handshake metadata and transfer-completion signaling. Changing `kv_port` does
+not change either D2RH control-port base. Mooncake TransferEngine RPC and
+UBoE/HCCL communication also have separate network requirements.
+
+For multiple D instances sharing a host network, assign non-overlapping ranges
+to both settings and avoid conflicts with HTTP, DP RPC, `kv_port`, and other
+services. For example, a second DP4/TP1/PP1 instance can use bases `39100` and
+`39200` if `39100-39103` and `39200-39203` are free. Configure the bases once in
+that instance's D launch command; rank offsets are added automatically. Ensure
+that D schedulers and workers can reach the bound D-node IP and these TCP ports.
 
 **2. Check both services, then start the proxy.**
 
