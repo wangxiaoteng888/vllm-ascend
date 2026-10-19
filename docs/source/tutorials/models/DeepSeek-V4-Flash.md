@@ -1125,8 +1125,6 @@ values. Run each script on its corresponding node.
 On P:
 
 ```shell
-set -eo pipefail
-
 unset ftp_proxy
 unset https_proxy
 unset http_proxy
@@ -1214,8 +1212,6 @@ vllm serve /path/to/DeepSeek-V4-Flash-0731-w4a4c8 \
 On D:
 
 ```shell
-set -eo pipefail
-
 unset ftp_proxy
 unset https_proxy
 unset http_proxy
