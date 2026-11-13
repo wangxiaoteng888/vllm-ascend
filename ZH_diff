@@ -1,0 +1,59 @@
+--- a/vllm_ascend/core/recompute_scheduler.py
++++ b/vllm_ascend/core/recompute_scheduler.py
+@@ -1007,6 +1007,26 @@
+         if self.defer_block_free and total_num_scheduled_tokens > 0:
+             self.sched_step_seq += 1
+ 
++        # Inspect prompt work before advancing counters; exclude one-token tail replay.
++        kv_config = self.vllm_config.kv_transfer_config
++        if kv_config is not None and kv_config.is_kv_consumer and not kv_config.is_kv_producer:
++            for req_id, scheduled_tokens in scheduler_output.num_scheduled_tokens.items():
++                request = self.requests[req_id]
++                computed_tokens = request.num_computed_tokens
++                prompt_work = min(scheduled_tokens, max(0, request.num_prompt_tokens - computed_tokens))
++                if prompt_work > 1:
++                    logger.warning(
++                        "[D_PREFILL] dp=%s step=%s req=%s computed_before=%d prompt_tokens=%d "
++                        "scheduled_tokens=%d prompt_work=%d",
++                        self.vllm_config.parallel_config.data_parallel_rank,
++                        self.current_step,
++                        req_id,
++                        computed_tokens,
++                        request.num_prompt_tokens,
++                        scheduled_tokens,
++                        prompt_work,
++                    )
++
+         with record_function_or_nullcontext("schedule: update_after_schedule"):
+             self._update_after_schedule(scheduler_output)
+         if getattr(self, "_enable_diagnostics", False):
+--- a/vllm_ascend/ascend_forward_context.py
++++ b/vllm_ascend/ascend_forward_context.py
+@@ -6,7 +6,7 @@
+ 
+ import torch
+ from vllm.config import CUDAGraphMode, VllmConfig, set_current_vllm_config
+-from vllm.distributed import get_dp_group, get_ep_group, get_tensor_model_parallel_world_size
++from vllm.distributed import get_dp_group, get_ep_group, get_tensor_model_parallel_world_size, get_world_group
+ from vllm.forward_context import BatchDescriptor, get_forward_context, set_forward_context
+ from vllm.logger import logger
+ 
+@@ -180,6 +180,18 @@
+             model_comm_methods[moe_comm_type] if model_comm_methods is not None else get_moe_comm_method(moe_comm_type)
+         )
+         forward_context.is_decode_only_node = _is_decode_only_node(vllm_config)
++        if forward_context.is_decode_only_node and moe_comm_type is not None:
++            logger.info(
++                "[MOE_SELECT] rank=%d dp=%d is_draft=%s tokens=%s mc2_capacity=%s comm=%s graph=%s profile=%s",
++                get_world_group().rank,
++                vllm_config.parallel_config.data_parallel_rank,
++                is_draft_model,
++                max_num_tokens,
++                get_mc2_tokens_capacity(),
++                moe_comm_type.name,
++                aclgraph_runtime_mode,
++                in_profile_run,
++            )
+         forward_context.use_mega_moe = use_cann_megamoe(vllm_config)
+         forward_context.draft_moe_quant_type = draft_moe_quant_type
+ 
