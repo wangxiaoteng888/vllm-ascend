@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
 """Scheduler-side logic for Mooncake pull transfers."""
 
+import logging
 import queue
 import threading
 import time
@@ -143,7 +144,7 @@ class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
             try:
                 finished.add(self.finished_requests.get_nowait())
             except queue.Empty:
-                if finished:
+                if finished and logger.isEnabledFor(logging.DEBUG):
                     with self.state_lock:
                         self._drained_since_last_status = True
                 return finished
@@ -174,7 +175,8 @@ class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
     def _run_busy_loop(self, sock: Any) -> None:
         decoder = msgspec.msgpack.Decoder(type=tuple)
         while not self.stop_event.is_set():
-            self._report_delayed_free_status()
+            if logger.isEnabledFor(logging.DEBUG):
+                self._report_delayed_free_status()
             try:
                 frames = sock.recv_multipart()
             except zmq.Again:  # type: ignore[attr-defined]

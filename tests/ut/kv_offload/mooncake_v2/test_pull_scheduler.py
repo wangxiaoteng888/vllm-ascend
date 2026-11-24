@@ -392,6 +392,54 @@ def status_records() -> Iterator[list[logging.LogRecord]]:
         logger.setLevel(previous_level)
 
 
+def test_delayed_free_status_disabled_skips_observation(monkeypatch: pytest.MonkeyPatch, status_records: list) -> None:
+    thread = make_sending_thread()
+    thread.add_delayed_request("done")
+    thread._handle_finished_request("done")
+    pull_scheduler.logger.setLevel(logging.INFO)
+    clock = MagicMock(side_effect=AssertionError("status clock must not run"))
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
+    lock = MagicMock()
+    thread.state_lock = lock
+    report = MagicMock(wraps=thread._report_delayed_free_status)
+    monkeypatch.setattr(thread, "_report_delayed_free_status", report)
+
+    sock = MagicMock()
+
+    def receive():
+        thread.stop_event.set()
+        raise zmq.Again()
+
+    sock.recv_multipart.side_effect = receive
+    thread._run_busy_loop(sock)
+
+    report.assert_not_called()
+    clock.assert_not_called()
+    lock.__enter__.assert_not_called()
+    sock.recv_multipart.assert_called_once()
+    assert thread.finished_requests.get_nowait() == "done"
+    assert thread._last_status_report_at is None
+    assert thread._drained_since_last_status is False
+
+
+@pytest.mark.parametrize("debug_enabled", [False, True])
+def test_delayed_free_drain_tracks_progress_only_in_debug(
+    monkeypatch: pytest.MonkeyPatch, status_records: list, debug_enabled: bool
+) -> None:
+    thread = make_sending_thread()
+    thread.add_delayed_request("done")
+    thread._handle_finished_request("done")
+    pull_scheduler.logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+    lock = MagicMock()
+    monkeypatch.setattr(thread, "state_lock", lock)
+
+    assert thread.get_and_clear_finished_requests() == {"done"}
+    # The original lease scan still takes its lock; observation adds none at INFO.
+    assert lock.__enter__.call_count == (2 if debug_enabled else 1)
+    assert thread._drained_since_last_status is debug_enabled
+    assert thread.finished_requests.empty()
+
+
 def test_delayed_free_status_silent_when_healthy_then_stalled_on_cadence(
     monkeypatch: pytest.MonkeyPatch, status_records: list
 ) -> None:
