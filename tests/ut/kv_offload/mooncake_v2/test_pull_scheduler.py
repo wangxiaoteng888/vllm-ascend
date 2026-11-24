@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import socket
 import threading
 import time
-from collections.abc import Iterator
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
@@ -361,308 +359,85 @@ def test_sending_thread_force_frees_expired_request(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.fixture
-def status_records() -> Iterator[list[logging.LogRecord]]:
-    """Capture the emitting logger's debug lines regardless of global config.
-
-    CI configures vLLM logging globally (non-propagating loggers, a global
-    disable level, per-logger levels), so capturing through pytest's root or
-    route handlers is not reliable there. Attach a handler straight to the
-    logger the code under test writes to, force its level to DEBUG, and lift
-    any global disable for the duration of the test; all three are restored
-    afterwards so no other test sees the change.
-    """
-    records: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
-
-    handler = _Capture(level=logging.DEBUG)
-    logger = pull_scheduler.logger
-    previous_level = logger.level
-    previous_disable = logging.root.manager.disable
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-    logging.disable(logging.NOTSET)
-    try:
-        yield records
-    finally:
-        logging.disable(previous_disable)
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-
-
-def test_delayed_free_status_disabled_skips_observation(monkeypatch: pytest.MonkeyPatch, status_records: list) -> None:
-    thread = make_sending_thread()
-    thread.add_delayed_request("done")
-    thread._handle_finished_request("done")
-    pull_scheduler.logger.setLevel(logging.INFO)
-    clock = MagicMock(side_effect=AssertionError("status clock must not run"))
-    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
-    lock = MagicMock()
-    thread.state_lock = lock
-    report = MagicMock(wraps=thread._report_delayed_free_status)
-    monkeypatch.setattr(thread, "_report_delayed_free_status", report)
-
-    sock = MagicMock()
-
-    def receive():
-        thread.stop_event.set()
-        raise zmq.Again()
-
-    sock.recv_multipart.side_effect = receive
-    thread._run_busy_loop(sock)
-
-    report.assert_not_called()
-    clock.assert_not_called()
-    lock.__enter__.assert_not_called()
-    sock.recv_multipart.assert_called_once()
-    assert thread.finished_requests.get_nowait() == "done"
-    assert thread._last_status_report_at is None
-    assert thread._drained_since_last_status is False
+def status_logger(monkeypatch: pytest.MonkeyPatch) -> logging.Logger:
+    logger = logging.Logger("mooncake-status-test", logging.DEBUG)
+    logger.manager = logging.Manager(logger)  # Isolate global CI logging.disable().
+    logger.debug = MagicMock()
+    logger.exception = MagicMock()
+    monkeypatch.setattr(pull_scheduler, "logger", logger)
+    return logger
 
 
 @pytest.mark.parametrize("debug_enabled", [False, True])
-def test_delayed_free_drain_tracks_progress_only_in_debug(
-    monkeypatch: pytest.MonkeyPatch, status_records: list, debug_enabled: bool
-) -> None:
+def test_delayed_free_status_loop_observes_only_in_debug(monkeypatch, status_logger, debug_enabled) -> None:
     thread = make_sending_thread()
+    thread.finished_requests.put("done")
+    status_logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
+    thread.state_lock = MagicMock()
+    thread.finished_requests = MagicMock(wraps=thread.finished_requests)
+    thread.stop_event.is_set = MagicMock(side_effect=[False, True])
+    sock = MagicMock()
+    sock.recv_multipart.side_effect = zmq.Again()
+
+    thread._run_busy_loop(sock)
+
+    assert clock.call_count == int(debug_enabled)
+    assert thread.finished_requests.qsize.call_count == int(debug_enabled)
+    assert status_logger.debug.call_count == int(debug_enabled)
+    thread.state_lock.__enter__.assert_not_called()
+    sock.recv_multipart.assert_called_once()
+    assert thread.finished_requests.get_nowait() == "done"
+
+
+def test_delayed_free_status_cadence_and_read_only(monkeypatch, status_logger) -> None:
+    thread = make_sending_thread()
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
+    thread.add_delayed_request("expired")
     thread.add_delayed_request("done")
     thread._handle_finished_request("done")
-    pull_scheduler.logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
-    lock = MagicMock()
-    monkeypatch.setattr(thread, "state_lock", lock)
-
-    assert thread.get_and_clear_finished_requests() == {"done"}
-    # The original lease scan still takes its lock; observation adds none at INFO.
-    assert lock.__enter__.call_count == (2 if debug_enabled else 1)
-    assert thread._drained_since_last_status is debug_enabled
-    assert thread.finished_requests.empty()
-
-
-def test_delayed_free_status_silent_when_healthy_then_stalled_on_cadence(
-    monkeypatch: pytest.MonkeyPatch, status_records: list
-) -> None:
-    """Healthy bookkeeping never logs; a stalled drain repeats on the cadence.
-
-    With an empty release queue every evaluation stays silent no matter how
-    many intervals pass. Once entries sit in the queue and the window saw no
-    drain, the first evaluation reports the stall and the report repeats on
-    each subsequent interval boundary while the stall persists.
-    """
-    thread = make_sending_thread()
-    clock = MagicMock(return_value=1000.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-
-    def status_lines() -> list:
-        return [r for r in status_records if "delayed-free status" in r.message]
-
-    # Healthy bookkeeping: empty release queue, nothing to report.
-    for _ in range(3):
-        clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
-        thread._report_delayed_free_status()
-    assert status_lines() == []
-
-    # A DONE lands and no drain follows: the stall forms mid-window and
-    # is caught at the next evaluation tick.
-    thread.add_delayed_request("stalled-now")
-    thread._handle_finished_request("stalled-now")
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
-    thread._report_delayed_free_status()
-    assert len(status_lines()) == 1
-
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2  # inside interval
-    thread._report_delayed_free_status()
-    assert len(status_lines()) == 1
-
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2  # boundary: fires again
-    thread._report_delayed_free_status()
-    assert len(status_lines()) == 2
-
-
-def test_delayed_free_status_reports_stall_with_depth_context(
-    monkeypatch: pytest.MonkeyPatch, status_records: list
-) -> None:
-    """The stalled line leads with the phrase and carries the depth context.
-
-    The field names mirror the member names (delayed_free_requests,
-    renewed_requests, finished_requests), so a log line maps back to code
-    by grep alone. The window seconds reflect the measured evaluation
-    interval, not a hard-coded constant.
-    """
-    thread = make_sending_thread()
-    clock = MagicMock(return_value=0.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-    thread.add_delayed_request("pulled-later")
-    thread.add_delayed_request("done-now")
-    clock.return_value = 20.0  # remaining lease 10s < lease_extension 20s: renew "pulled-later"
-    thread._handle_heartbeat(["pulled-later"])
-    thread._handle_finished_request("done-now")  # DONE arrives: ledger pop, queued for drain
+    status_logger.debug.reset_mock()
+    before = (dict(thread.delayed_free_requests), dict(thread.renewed_requests), thread.finished_requests.qsize())
+    clock.return_value += 40  # The reporter must not reap the expired lease.
 
     thread._report_delayed_free_status()
-
-    records = [r for r in status_records if "delayed-free status" in r.message]
-    assert len(records) == 1
-    message = records[0].getMessage()
-    assert "engine_id=engine-p" in message
-    assert "stalled: 1 queued, no drain this window" in message
-    assert "last 10s: drained=0" in message
-    assert "now: delayed_free=0 renewed=1 finished=1" in message
-
-
-def test_delayed_free_status_measured_window_seconds(monkeypatch: pytest.MonkeyPatch, status_records: list) -> None:
-    """The reported window seconds come from the measured evaluation interval.
-
-    A delayed evaluation (loop hiccup, GC pause) must not be reported as the
-    nominal 10s: the line carries the real seconds since the previous
-    evaluation.
-    """
-    thread = make_sending_thread()
-    clock = MagicMock(return_value=1000.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-    thread.add_delayed_request("stalled-now")
-    thread._handle_finished_request("stalled-now")
-
-    thread._report_delayed_free_status()  # first evaluation: window falls back to the nominal interval
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS + 7.0  # delayed next evaluation
-
-    thread._report_delayed_free_status()
-
-    records = [r for r in status_records if "delayed-free status" in r.message]
-    assert len(records) == 2
-    assert "last 10s:" in records[0].getMessage()
-    assert f"last {DELAYED_FREE_STATUS_INTERVAL_SECONDS + 7:.0f}s:" in records[1].getMessage()
-
-
-def test_delayed_free_status_suppressed_by_drain_this_window(
-    monkeypatch: pytest.MonkeyPatch, status_records: list
-) -> None:
-    """A drain inside the window suppresses the stalled report for that window.
-
-    Entries drained by the scheduler hook mid-window mean the release
-    chain's exit is moving; even if a new DONE lands in the queue right
-    after, that window must not be reported as stalled. The next window
-    without a drain reports the stall again.
-    """
-    thread = make_sending_thread()
-    clock = MagicMock(return_value=1000.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-
-    def status_lines() -> list:
-        return [r for r in status_records if "delayed-free status" in r.message]
-
-    thread.add_delayed_request("drained-later")
-    thread._handle_finished_request("drained-later")
-    thread._report_delayed_free_status()  # stall: queued, no drain this window
-    assert len(status_lines()) == 1
-
-    # The hook drains the queue, then a new DONE lands right after: the
-    # exit is moving, so this window stays silent despite the queue
-    # being non-empty again at evaluation time.
-    assert thread.get_and_clear_finished_requests() == {"drained-later"}
-    thread.add_delayed_request("arrived-after-drain")
-    thread._handle_finished_request("arrived-after-drain")
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
-    thread._report_delayed_free_status()
-    assert len(status_lines()) == 1
-
-    # Next window without any drain: the stall is reported again.
-    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
-    thread._report_delayed_free_status()
-    assert len(status_lines()) == 2
-
-
-def test_delayed_free_status_never_mutates_bookkeeping(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The status report is strictly observational, even for expired entries.
-
-    The lease-expiry scan stays owned by the scheduler hook
-    (`get_and_clear_finished_requests`); the status line must not archive,
-    reap, or otherwise move entries. An expired entry sitting in a ledger is
-    exactly the state operators need to see, not one the reporter may
-    silently consume. The drain window flag is the reporter's own state and
-    is reset by the evaluation, but the bookkeeping snapshot must not move.
-    """
-    thread = make_sending_thread()
-    clock = MagicMock(return_value=0.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-    thread.add_delayed_request("orphaned")
-    clock.return_value = 31.0  # lease (30s) long expired
-
-    def snapshot() -> tuple:
-        return (
-            dict(thread.delayed_free_requests),
-            dict(thread.renewed_requests),
-            thread.finished_requests.qsize(),
-        )
-
-    before = snapshot()
-    thread._drained_since_last_status = True  # stale window flag must not survive the evaluation
-    thread._report_delayed_free_status()
-    thread._report_delayed_free_status()  # throttled second call: still no mutation
-    after = snapshot()
-
-    assert before == after
-    assert thread._drained_since_last_status is False  # the flag itself is reset
-    assert "orphaned" in thread.delayed_free_requests
-    assert thread.finished_requests.qsize() == 0
-
-
-def test_sending_thread_reports_status_from_real_busy_loop(
-    monkeypatch: pytest.MonkeyPatch, status_records: list
-) -> None:
-    """The real zmq busy loop drives the stalled report without any peer.
-
-    Binds a real ROUTER socket with RCVTIMEO=1s and runs the busy loop; no
-    producer/decode peer exists, so every iteration takes the recv-timeout
-    branch. A stalled release queue is pre-seeded (DONE received, and
-    without a scheduler hook no drain can happen), so the loop itself emits
-    the stalled line on the real timing path (no mocks on the loop): once
-    immediately, then again after one status interval.
-    """
-    with socket.socket() as probe:  # pick a free port
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    thread = MooncakeSchedulerSendingThread(
-        host="127.0.0.1",
-        port=port,
-        engine_id="engine-p",
-        metadata={0: make_transfer_metadata()},
-        tp_size=1,
-        pp_size=1,
-        pcp_size=1,
-        dcp_size=1,
-        use_kv_pp=False,
-        ready_event=threading.Event(),
-        kv_lease_duration=30,
+    status_logger.debug.assert_called_once_with(
+        "Mooncake delayed-free status: engine_id=%s pending_release=%d", "engine-p", 1
     )
-    # Capture the real clock BEFORE the module-wide patch below: `pull_scheduler.time`
-    # is the `time` module itself, so the mock would freeze this test's own deadline.
-    real_monotonic = time.monotonic
-    clock = MagicMock(return_value=1000.0)
-    monkeypatch.setattr(pull_scheduler.time, "monotonic", clock)
-    thread.add_delayed_request("wire-stalled")
-    thread._handle_finished_request("wire-stalled")  # queued; nothing will ever drain it
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2
+    thread._report_delayed_free_status()
+    assert status_logger.debug.call_count == 1
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2
+    thread._report_delayed_free_status()
+    assert status_logger.debug.call_count == 2
+    assert before == (
+        dict(thread.delayed_free_requests),
+        dict(thread.renewed_requests),
+        thread.finished_requests.qsize(),
+    )
 
-    def status_count() -> int:
-        return len([r for r in status_records if "delayed-free status" in r.message])
+    assert thread.get_and_clear_finished_requests() == {"done", "expired"}
+    status_logger.debug.reset_mock()
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
+    thread._report_delayed_free_status()
+    status_logger.debug.assert_not_called()  # Empty queues stay silent.
 
-    thread.start()
-    try:
-        assert thread.ready_event.wait(timeout=5)
-        deadline = real_monotonic() + 5
-        while real_monotonic() < deadline and status_count() < 1:
-            time.sleep(0.05)
-        assert status_count() >= 1, "stalled line not emitted from the running busy loop"
 
-        clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
-        deadline = real_monotonic() + 5
-        while real_monotonic() < deadline and status_count() < 2:
-            time.sleep(0.05)
-        assert status_count() >= 2, "stalled line did not repeat after one status interval"
-    finally:
-        thread.shutdown()
-        thread.join(timeout=5)
-    assert not thread.is_alive()
+def test_delayed_free_status_failure_keeps_control_loop_running(monkeypatch, status_logger) -> None:
+    thread = make_sending_thread()
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+    thread.finished_requests = MagicMock()
+    thread.finished_requests.qsize.side_effect = RuntimeError("observation failed")
+    thread.stop_event.is_set = MagicMock(side_effect=[False, True])
+    sock = MagicMock()
+    sock.recv_multipart.side_effect = zmq.Again()
+
+    thread._run_busy_loop(sock)
+
+    status_logger.exception.assert_called_once_with("Mooncake delayed-free status report failed")
+    sock.recv_multipart.assert_called_once()
 
 
 def test_recving_thread_reuses_socket_after_ack_and_discards_it_on_error(
