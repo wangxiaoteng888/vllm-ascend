@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import threading
 import time
 from dataclasses import replace
@@ -32,6 +33,7 @@ from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake.metadata import (
 )
 from vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake.pull_scheduler import (
     ACK_MSG,
+    DELAYED_FREE_STATUS_INTERVAL_SECONDS,
     DONE_RECVING_MSG,
     MooncakePullConnectorScheduler,
     MooncakeSchedulerRecvingThread,
@@ -354,6 +356,88 @@ def test_sending_thread_force_frees_expired_request(monkeypatch: pytest.MonkeyPa
 
     thread._handle_finished_request("expired")
     assert thread.get_and_clear_finished_requests() == set()
+
+
+@pytest.fixture
+def status_logger(monkeypatch: pytest.MonkeyPatch) -> logging.Logger:
+    logger = logging.Logger("mooncake-status-test", logging.DEBUG)
+    logger.manager = logging.Manager(logger)  # Isolate global CI logging.disable().
+    logger.debug = MagicMock()
+    logger.exception = MagicMock()
+    monkeypatch.setattr(pull_scheduler, "logger", logger)
+    return logger
+
+
+@pytest.mark.parametrize("debug_enabled", [False, True])
+def test_delayed_free_status_loop_observes_only_in_debug(monkeypatch, status_logger, debug_enabled) -> None:
+    thread = make_sending_thread()
+    thread.finished_requests.put("done")
+    status_logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
+    thread.state_lock = MagicMock()
+    thread.finished_requests = MagicMock(wraps=thread.finished_requests)
+    thread.stop_event.is_set = MagicMock(side_effect=[False, True])
+    sock = MagicMock()
+    sock.recv_multipart.side_effect = zmq.Again()
+
+    thread._run_busy_loop(sock)
+
+    assert clock.call_count == int(debug_enabled)
+    assert thread.finished_requests.qsize.call_count == int(debug_enabled)
+    assert status_logger.debug.call_count == int(debug_enabled)
+    thread.state_lock.__enter__.assert_not_called()
+    sock.recv_multipart.assert_called_once()
+    assert thread.finished_requests.get_nowait() == "done"
+
+
+def test_delayed_free_status_cadence_and_read_only(monkeypatch, status_logger) -> None:
+    thread = make_sending_thread()
+    clock = MagicMock(return_value=1000.0)
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=clock))
+    thread.add_delayed_request("expired")
+    thread.add_delayed_request("done")
+    thread._handle_finished_request("done")
+    status_logger.debug.reset_mock()
+    before = (dict(thread.delayed_free_requests), dict(thread.renewed_requests), thread.finished_requests.qsize())
+    clock.return_value += 40  # The reporter must not reap the expired lease.
+
+    thread._report_delayed_free_status()
+    status_logger.debug.assert_called_once_with(
+        "Mooncake delayed-free status: engine_id=%s pending_release=%d", "engine-p", 1
+    )
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2
+    thread._report_delayed_free_status()
+    assert status_logger.debug.call_count == 1
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS / 2
+    thread._report_delayed_free_status()
+    assert status_logger.debug.call_count == 2
+    assert before == (
+        dict(thread.delayed_free_requests),
+        dict(thread.renewed_requests),
+        thread.finished_requests.qsize(),
+    )
+
+    assert thread.get_and_clear_finished_requests() == {"done", "expired"}
+    status_logger.debug.reset_mock()
+    clock.return_value += DELAYED_FREE_STATUS_INTERVAL_SECONDS
+    thread._report_delayed_free_status()
+    status_logger.debug.assert_not_called()  # Empty queues stay silent.
+
+
+def test_delayed_free_status_failure_keeps_control_loop_running(monkeypatch, status_logger) -> None:
+    thread = make_sending_thread()
+    monkeypatch.setattr(pull_scheduler, "time", SimpleNamespace(monotonic=lambda: 1000.0))
+    thread.finished_requests = MagicMock()
+    thread.finished_requests.qsize.side_effect = RuntimeError("observation failed")
+    thread.stop_event.is_set = MagicMock(side_effect=[False, True])
+    sock = MagicMock()
+    sock.recv_multipart.side_effect = zmq.Again()
+
+    thread._run_busy_loop(sock)
+
+    status_logger.exception.assert_called_once_with("Mooncake delayed-free status report failed")
+    sock.recv_multipart.assert_called_once()
 
 
 def test_recving_thread_reuses_socket_after_ack_and_discards_it_on_error(

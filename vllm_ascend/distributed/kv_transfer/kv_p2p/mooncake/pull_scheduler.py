@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Ascend project
 """Scheduler-side logic for Mooncake pull transfers."""
 
+import logging
 import queue
 import threading
 import time
@@ -53,6 +54,7 @@ DONE_RECVING_MSG = b"done_recving_msg"
 ACK_MSG = b"ACK"
 PRODUCER_LEASE_CACHE_TTL_SECONDS = 600
 PRODUCER_LEASE_CACHE_MAX_SIZE = 1024
+DELAYED_FREE_STATUS_INTERVAL_SECONDS = 10.0
 
 
 class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
@@ -79,6 +81,7 @@ class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
         self.lease_extension = kv_lease_duration * 2 // 3
         self.finished_requests: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.state_lock = threading.Lock()
+        self._next_status_report_at = 0.0
 
     def add_delayed_request(self, request_id: str) -> None:
         with self.state_lock:
@@ -157,6 +160,8 @@ class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
     def _run_busy_loop(self, sock: Any) -> None:
         decoder = msgspec.msgpack.Decoder(type=tuple)
         while not self.stop_event.is_set():
+            if logger.isEnabledFor(logging.DEBUG):
+                self._report_delayed_free_status()
             try:
                 frames = sock.recv_multipart()
             except zmq.Again:  # type: ignore[attr-defined]
@@ -239,6 +244,24 @@ class MooncakeSchedulerSendingThread(MooncakeMetadataThread):
                 self._mark_finished_locked(request_id)
                 expired.append((request_id, now - expiry))
         return expired
+
+    def _report_delayed_free_status(self) -> None:
+        """Sample pending releases; a queue depth alone does not prove a stall."""
+        try:
+            now = time.monotonic()
+            if now < self._next_status_report_at:
+                return
+            self._next_status_report_at = now + DELAYED_FREE_STATUS_INTERVAL_SECONDS
+            pending = self.finished_requests.qsize()
+            if pending:
+                logger.debug(
+                    "Mooncake delayed-free status: engine_id=%s pending_release=%d",
+                    self.engine_id,
+                    pending,
+                )
+        except Exception:
+            # Observation must not interrupt DONE or heartbeat handling.
+            logger.exception("Mooncake delayed-free status report failed")
 
 
 class MooncakeSchedulerRecvingThread(threading.Thread):
